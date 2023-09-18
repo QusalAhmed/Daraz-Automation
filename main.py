@@ -13,6 +13,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as ec
 from selenium.webdriver.support.wait import WebDriverWait
+from selenium.webdriver.common.keys import Keys
 
 # setting database
 conn = sqlite3.connect('shop_data.db')
@@ -102,6 +103,7 @@ def check_message_status():
             driver.refresh()
     except TimeoutException:
         driver.refresh()
+    time.sleep(1)
     try:
         wait.until(ec.presence_of_element_located((By.XPATH, "//span[contains(text(),'Unreplied')]"))).click()
         message_elements = driver.find_elements(By.CSS_SELECTOR, '[class^="SessionListItem"]')
@@ -111,14 +113,16 @@ def check_message_status():
     shop_name = driver.find_element(By.CLASS_NAME, 'im-page-header-switch-nickname').text
     for message_element in message_elements:
         msg_time = message_element.find_element(By.CSS_SELECTOR, '[class^="SessionDate"]').text
-        msg_title = message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTitle"]').text
+        # msg_title = message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTitle"]').text
+        message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTitle"]').click()
+        msg_title = message_scraping()
         msg_telegram = re.sub(r'([\[*_])', r'\\\1', msg_title)
         customer_msg = simplified_text(msg_title)
         sender_name = message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTarget"]').text
-        try:
-            msg_count = int(message_element.find_element(By.CSS_SELECTOR, '[class^="SessionBadge"]').text)
-        except NoSuchElementException:
-            msg_count = 2
+        # try:
+        #     msg_count = int(message_element.find_element(By.CSS_SELECTOR, '[class^="SessionBadge"]').text)
+        # except NoSuchElementException:
+        #     msg_count = 2
         auto_reply_db.execute("SELECT reply FROM auto_reply WHERE message LIKE ?",
                               ('%' + customer_msg + '%',))
         auto_reply = auto_reply_db.fetchall()
@@ -126,7 +130,7 @@ def check_message_status():
             'SELECT reply FROM external_reply WHERE query = ? AND shop_name = ? AND customer_name = ?',
             (customer_msg, shop_name, sender_name))
         external_reply = auto_reply_db.fetchall()
-        if auto_reply and msg_count == 1:
+        if auto_reply:
             input_message(message_element, auto_reply)
             send_message('{} ♯{} ➤{}\n➥ {}'.format(
                 shop_name, msg_time, msg_telegram, auto_reply[0][0], to_md(sender_name)), True)
@@ -143,7 +147,7 @@ def check_message_status():
             auto_reply_db.execute('DELETE FROM external_reply WHERE query = ? AND shop_name = ?',
                                   (customer_msg, shop_name))
             conn.commit()
-        elif msg_count > 1:
+        else:
             message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTitle"]').click()
             wait.until(ec.presence_of_element_located(
                 (By.CSS_SELECTOR, '[class^="scrollbar-styled MessageList"] .messageItem')))
@@ -166,8 +170,6 @@ def check_message_status():
             except Exception as msg_sending_error:
                 print(msg_sending_error)
             os.remove('Message Screenshot/' + customer_msg + '.png')
-        else:
-            send_message('*{}* ♯{} ➤{}\n࿐{}'.format(shop_name, msg_time, msg_telegram, to_md(sender_name)))
     cursor.execute('UPDATE login_credential SET remark = ? WHERE id = ?',
                    (time.strftime("%Y-%m-%d %H-%M-%S"), order))
     conn.commit()
@@ -178,24 +180,59 @@ def check_message_status():
         wait.until(ec.element_to_be_clickable((By.CSS_SELECTOR, '.learMoreButtonStyle'))).click()
         seller_pick_quota = driver.find_element(By.XPATH, "//div[@class='keyMetricsSeeMoreContent']/div["
                                                           "7]/div[2]/div[2]").text
+        out_of_stock = (driver.find_element(By.XPATH, "//div[contains(text(),'Out Of Stock')]/..").
+                        find_element(By.CSS_SELECTOR, ":nth-child(2)").text)
+        if out_of_stock != '0':
+            send_message('Out of Stock ↺ *{}*'.format(database_shop_name))
         if int(seller_pick_quota.split('/')[0]) != int(seller_pick_quota.split('/')[1]):
-            send_message('Fix Seller Pick Quota ↺ {}'.format(database_shop_name))
+            send_message('Fix Seller Pick Quota ↺ *{}*'.format(database_shop_name))
+
+        # Campaign
+        while True:
+            try:
+                driver.find_element(By.CSS_SELECTOR, '.campaignEventsContent')
+                break
+            except NoSuchElementException:
+                driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.PAGE_DOWN)
+        campaigns = driver.find_elements(By.CSS_SELECTOR,
+                                         '.campaignEventsContent .singleCampaignEventContent')
+        for campaign in campaigns:
+            time_elements = campaign.find_elements(
+                By.CSS_SELECTOR, '.singleCampaignEventBackgroundContent')
+            campaign_title = campaign.find_element(By.CSS_SELECTOR, '.singleCampaignEventTitleStyle').text
+            campaign_day = int(time_elements[0].text)
+            campaign_hour = int(time_elements[1].text)
+            if campaign_day == 0 and campaign_hour <= 12:
+                campaign_cursor = conn.cursor()
+                campaign_cursor.execute('SELECT * FROM campaign_alart WHERE shop_name = ? AND title = ?',
+                                        (shop_name, campaign_title)).fetchone()
+                send_message('Join Campaign 彡*{}* 🪐{}Hour(s) left\n{}'.
+                             format(database_shop_name, campaign_hour, campaign_title))
     except NoSuchElementException:
         pass
 
 
-def message_scraping():
+def message_scraping():  # inside message block
+    message_brief = ''
+    message_summary = ''
     msg_window = wait.until(
         ec.presence_of_element_located((By.CSS_SELECTOR, '[class^="scrollbar-styled MessageList"]')))
     for msg_block in msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[::-1]:
         msg_block_class = msg_block.get_attribute('class')
-        if 'user-type-1' in msg_block_class:
-            if 'row-card-text' in msg_block_class:
-                print(msg_block.text)
-            elif 'row-card-order' in msg_block_class:
-                print(msg_block.text)
-        elif 'user-type-2' in msg_block_class:
-            return True
+        if 'user-type-2' in msg_block_class:
+            break
+        elif 'row-card-text' in msg_block_class:
+            message_summary += '\n' + msg_block.text
+            message_brief += '\n' + msg_block.text
+        elif 'row-card-order' in msg_block_class:
+            message_summary += ('\n' + msg_block.find_element(By.CSS_SELECTOR, '.card-header').text +
+                                '\n Product: ' + msg_block.find_element(By.CSS_SELECTOR, '.text-info').text)
+        elif 'row-card-system' in msg_block_class:
+            pass
+        elif 'row-card-product' in msg_block_class:
+            product_details = msg_block.find_element(By.CSS_SELECTOR, '.lzd-pro-desc').text
+            message_summary += '\nProduct: ' + product_details
+    return message_brief.strip()
 
 
 def input_message(message_element, auto_reply):
@@ -263,8 +300,8 @@ def rts():
     if header_rts.text.lower() == 'Ready to Ship'.lower():
         header_rts.click()
         try:
-            wait.until(ec.visibility_of_element_located((By.XPATH, "//button[text()='Save invoice ID']")))
             time.sleep(2)
+            wait.until(ec.visibility_of_element_located((By.XPATH, "//button[text()='Save invoice ID']")))
             wait.until(ec.element_to_be_clickable((By.XPATH, "//button[text()='Save invoice ID']"))).click()
         except TimeoutException:
             pass
@@ -434,8 +471,8 @@ options.add_argument("--zoom=1.5")
 driver, wait, mouse = set_browser()
 if __name__ == '__main__':
     # Start a separate thread to continuously check for messages
-    message_thread = threading.Thread(target=check_for_messages)
-    message_thread.start()
+    # message_thread = threading.Thread(target=check_for_messages)
+    # message_thread.start()
     print('Message Thread Started')
     while True:
         cursor.execute('SELECT * FROM login_credential')
