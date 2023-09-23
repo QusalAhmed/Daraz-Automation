@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -6,6 +7,7 @@ import threading
 import time
 import requests
 import telebot
+from datetime import datetime, timedelta
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException
 from selenium.common.exceptions import TimeoutException
@@ -15,10 +17,15 @@ from selenium.webdriver.support import expected_conditions as ec
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.common.keys import Keys
 
+# Configure logging settings
+logging.basicConfig(level=logging.DEBUG,
+                    format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
 # setting database
 conn = sqlite3.connect('shop_data.db')
 cursor = conn.cursor()
 auto_reply_db = conn.cursor()
+process_db = conn.cursor()
 
 # Setting bot data
 essential_cursor = conn.cursor()
@@ -26,6 +33,17 @@ bot_token = essential_cursor.execute(
     'SELECT value FROM essentials WHERE name = ?', ('bot_token',)).fetchone()[0]
 # bot_token = '5618872665:AAED7ikwYNQxFfZzWwR6B8-NVB3LKb5P-SA'
 bot = telebot.TeleBot(bot_token, parse_mode='Markdown')
+
+
+def process_time(process_name):
+    process_db.execute("SELECT execution_time FROM process_time WHERE name = ? AND shop_name = ?",
+                       (process_name, database_shop_name))
+    time_difference = (datetime.strptime(time.strftime("%Y %m %d-%H %M %S"), '%Y %m %d-%H %M %S') -
+                       datetime.strptime(process_db.fetchone()[0], '%Y %m %d-%H %M %S'))
+    if time_difference < timedelta(hours=5):
+        return False
+    else:
+        return True
 
 
 def export_cookies():
@@ -46,10 +64,11 @@ def login():
     except Exception as login_error:
         print(login_error)
         login()
-    print(f"Response Code: {requests.head(driver.current_url).status_code}")
+    # print(f"Response Code: {requests.head(driver.current_url).status_code}")
     new_cookie = json.dumps(driver.get_cookies())
     cursor.execute('UPDATE login_credential SET cookie = ? WHERE id = ?', (new_cookie, order))
     conn.commit()
+    logging.info('Login Successful')
 
 
 def send_message(message_text, notify=False):
@@ -75,6 +94,7 @@ def load_cookies(cookie_file):
     cookies = json.loads(cookie_file)
     for cookie_data in cookies:
         driver.add_cookie(cookie_data)
+    logging.info('Cookies loaded')
     login_status()
 
 
@@ -92,6 +112,7 @@ def to_md(text):
 
 
 def check_message_status():
+    logging.info('Checking message status')
     # if 'https://sellercenter.daraz.com.bd/v2/chat/window' not in driver.current_url:
     #     load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
     load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
@@ -108,7 +129,7 @@ def check_message_status():
         wait.until(ec.presence_of_element_located((By.XPATH, "//span[contains(text(),'Unreplied')]"))).click()
         message_elements = driver.find_elements(By.CSS_SELECTOR, '[class^="SessionListItem"]')
     except NoSuchElementException:
-        message_elements = []
+        return True
 
     shop_name = driver.find_element(By.CLASS_NAME, 'im-page-header-switch-nickname').text
     for message_element in message_elements:
@@ -116,6 +137,8 @@ def check_message_status():
         # msg_title = message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTitle"]').text
         message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTitle"]').click()
         msg_title = message_scraping()
+        if msg_title is None:
+            continue
         msg_telegram = re.sub(r'([\[*_])', r'\\\1', msg_title)
         customer_msg = simplified_text(msg_title)
         sender_name = message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTarget"]').text
@@ -123,21 +146,20 @@ def check_message_status():
         #     msg_count = int(message_element.find_element(By.CSS_SELECTOR, '[class^="SessionBadge"]').text)
         # except NoSuchElementException:
         #     msg_count = 2
-        auto_reply_db.execute("SELECT reply FROM auto_reply WHERE message LIKE ?",
-                              ('%' + customer_msg + '%',))
+        auto_reply_db.execute("SELECT reply FROM auto_reply WHERE message = ?", (customer_msg,))
         auto_reply = auto_reply_db.fetchall()
         auto_reply_db.execute(
             'SELECT reply FROM external_reply WHERE query = ? AND shop_name = ? AND customer_name = ?',
             (customer_msg, shop_name, sender_name))
         external_reply = auto_reply_db.fetchall()
         if auto_reply:
-            input_message(message_element, auto_reply)
+            input_message(auto_reply)
             send_message('{} ♯{} ➤{}\n➥ {}'.format(
                 shop_name, msg_time, msg_telegram, auto_reply[0][0], to_md(sender_name)), True)
             # bot.send_message(chat_id, '{} ♯{} ➤{}\n➥ {}'. format(shop_name, msg_time, msg_title,
             # auto_reply[0]), disable_notification=True)
         elif external_reply:
-            input_message(message_element, external_reply)
+            input_message(external_reply)
             for single_reply in external_reply:
                 send_message('{} ♯{} ➤{}\n╰┈➤ {}'.
                              format(shop_name, msg_time, msg_telegram, to_md(single_reply[0])), True)
@@ -148,33 +170,29 @@ def check_message_status():
                                   (customer_msg, shop_name))
             conn.commit()
         else:
-            message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTitle"]').click()
-            wait.until(ec.presence_of_element_located(
-                (By.CSS_SELECTOR, '[class^="scrollbar-styled MessageList"] .messageItem')))
-            time.sleep(2)
-            try:
-                driver.find_element(By.CLASS_NAME, 'card-image')
-                driver.execute_script("document.querySelector('.card-image').remove();")
-            except NoSuchElementException:
-                pass
-            # if driver.find_element(By.CLASS_NAME, 'card-image'):
-            #     driver.execute_script("document.querySelector('.card-image').remove();")
-            driver.save_screenshot('Message Screenshot/' + customer_msg + '.png')
-            # bot.send_photo('1783177827', open('Message Screenshot/' + msg_title + '.png', 'rb'),
-            #                caption='*{}* ♯{} ➤{}•'.format(shop_name, msg_time, msg_title)
+            # message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTitle"]').click()
+            # wait.until(ec.presence_of_element_located(
+            #     (By.CSS_SELECTOR, '[class^="scrollbar-styled MessageList"] .messageItem')))
+            # time.sleep(2)
+            image_name = shop_name + '-' + simplified_text(sender_name)
+            driver.save_screenshot('Message Screenshot/' + image_name + '.png')
             try:
                 if database_shop_name != 'Unique Live shopping':
-                    bot.send_photo('1783177827', open('Message Screenshot/' + customer_msg + '.png', 'rb'))
-                send_message('*{}* ♯{} ➤{}•\n࿐{}'.
+                    bot.send_photo('1783177827', open('Message Screenshot/' + image_name + '.png', 'rb'))
+                send_message('*{}* ♯{} ➤{}\n࿐{}'.
                              format(shop_name, msg_time, msg_telegram, to_md(sender_name)))
             except Exception as msg_sending_error:
                 print(msg_sending_error)
-            os.remove('Message Screenshot/' + customer_msg + '.png')
+            os.remove('Message Screenshot/' + image_name + '.png')
     cursor.execute('UPDATE login_credential SET remark = ? WHERE id = ?',
                    (time.strftime("%Y-%m-%d %H-%M-%S"), order))
     conn.commit()
+    logging.info('Message status checked')
 
-    # driver.find_element(By.CSS_SELECTOR, "[class^='StationLogo']").click()
+
+def home_inspection():
+    if not process_time('home_inspection'):
+        return True
     load_page('https://sellercenter.daraz.com.bd/v2/home')
     try:
         wait.until(ec.element_to_be_clickable((By.CSS_SELECTOR, '.learMoreButtonStyle'))).click()
@@ -205,25 +223,38 @@ def check_message_status():
             if campaign_day == 0 and campaign_hour <= 12:
                 campaign_cursor = conn.cursor()
                 campaign_cursor.execute('SELECT * FROM campaign_alart WHERE shop_name = ? AND title = ?',
-                                        (shop_name, campaign_title)).fetchone()
+                                        (database_shop_name, campaign_title)).fetchone()
                 send_message('Join Campaign 彡*{}* 🪐{}Hour(s) left\n{}'.
                              format(database_shop_name, campaign_hour, campaign_title))
     except NoSuchElementException:
-        pass
+        driver.refresh()
+        home_inspection()
+
+    process_db.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
+                       (time.strftime("%Y %m %d-%H %M %S"), database_shop_name, 'home_inspection'))
+    conn.commit()
 
 
 def message_scraping():  # inside message block
     message_brief = ''
     message_summary = ''
+    try:
+        wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, '.user-type-1')))
+    except TimeoutException:
+        check_message_status()
     msg_window = wait.until(
         ec.presence_of_element_located((By.CSS_SELECTOR, '[class^="scrollbar-styled MessageList"]')))
     for msg_block in msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[::-1]:
         msg_block_class = msg_block.get_attribute('class')
         if 'user-type-2' in msg_block_class:
+            if message_summary == '':
+                return None
+            if 'row-card-image' in msg_block_class:
+                driver.execute_script("arguments[0].remove();", msg_block)
             break
         elif 'row-card-text' in msg_block_class:
             message_summary += '\n' + msg_block.text
-            message_brief += '\n' + msg_block.text
+            message_brief = msg_block.text + '➛' + message_brief
         elif 'row-card-order' in msg_block_class:
             message_summary += ('\n' + msg_block.find_element(By.CSS_SELECTOR, '.card-header').text +
                                 '\n Product: ' + msg_block.find_element(By.CSS_SELECTOR, '.text-info').text)
@@ -232,11 +263,14 @@ def message_scraping():  # inside message block
         elif 'row-card-product' in msg_block_class:
             product_details = msg_block.find_element(By.CSS_SELECTOR, '.lzd-pro-desc').text
             message_summary += '\nProduct: ' + product_details
-    return message_brief.strip()
+
+    last_element = msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1]
+    driver.execute_script("arguments[0].scrollIntoView();", last_element)
+    return re.sub(r'➛$', '', message_brief).strip()
 
 
-def input_message(message_element, auto_reply):
-    message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTitle"]').click()
+def input_message(auto_reply):
+    # message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTitle"]').click()
     for single_reply in auto_reply:
         driver.find_element(By.CSS_SELECTOR, 'textarea').send_keys('\n' + single_reply[0])
     sent_button = driver.find_element(By.CSS_SELECTOR, '[class^="MessageInputBox"] button')
@@ -245,6 +279,8 @@ def input_message(message_element, auto_reply):
 
 
 def order_limit():
+    if not process_time('order_limit'):
+        return True
     load_page('https://sellercenter.daraz.com.bd/order/query?tab=pending')
     try:
         if (wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, 'table td .next-table-empty')))
@@ -316,6 +352,9 @@ def rts():
         except TimeoutException:
             pass
     print('RTS completed')
+    process_db.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
+                       (time.strftime("%Y %m %d-%H %M %S"), database_shop_name, 'order_limit'))
+    conn.commit()
 
 
 def move_click(move_element, click_element):
@@ -332,6 +371,7 @@ def load_page(page_url):
 
 
 def question():
+    logging.info('Checking question status')
     load_page('https://sellercenter.daraz.com.bd/msg/index')
     try:
         # question_element = driver.find_element(By.XPATH, "//div[contains(text(),'Customer Question')]").text
@@ -372,6 +412,7 @@ def login_status():
     except TimeoutException:
         pass
     if 'chat/window' not in driver.current_url:
+        logging.error('Login Failed via cookies')
         login()
 
 
@@ -453,13 +494,14 @@ def check_for_messages():
 
 # Handling external reply ended
 
-service = Service(executable_path='driver/chromedriver.exe')
+# service = Service(executable_path='driver/chromedriver.exe')
+service = Service(executable_path='/usr/bin/chromedriver')
 options = webdriver.ChromeOptions()
 options.page_load_strategy = 'eager'
 options.add_argument('--start-maximized')
-# options.add_argument('--headless')
-# options.add_argument('--disable-gpu')
-# options.add_argument('--no-sandbox')
+options.add_argument('--headless')
+options.add_argument('--disable-gpu')
+options.add_argument('--no-sandbox')
 options.add_argument('--disable-dev-shm-usage')
 options.add_argument('--ignore-certificate-errors')
 options.add_argument('--ignore-ssl-errors')
@@ -471,8 +513,8 @@ options.add_argument("--zoom=1.5")
 driver, wait, mouse = set_browser()
 if __name__ == '__main__':
     # Start a separate thread to continuously check for messages
-    # message_thread = threading.Thread(target=check_for_messages)
-    # message_thread.start()
+    message_thread = threading.Thread(target=check_for_messages)
+    message_thread.start()
     print('Message Thread Started')
     while True:
         cursor.execute('SELECT * FROM login_credential')
@@ -482,13 +524,17 @@ if __name__ == '__main__':
             try:
                 load_cookies(cookie)
                 check_message_status()
+                home_inspection()
                 order_limit()
                 question()
             except Exception as error:
                 print(error)
                 driver.save_screenshot('Error Screenshot/' + database_shop_name +
                                        time.strftime(" %Y%m%d-%H%M%S") + '.png')
-                driver.quit()
+                try:
+                    driver.quit()
+                except Exception as quit_error:
+                    print(quit_error)
                 driver, wait, mouse = set_browser()
             conn.commit()
         print('Cycle Completed')
