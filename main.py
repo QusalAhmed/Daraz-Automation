@@ -18,7 +18,7 @@ from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.common.keys import Keys
 
 # Configure logging settings
-logging.basicConfig(level=logging.DEBUG, filename='bot.log', filemode='a',
+logging.basicConfig(level=logging.DEBUG, filename='bot.log', filemode='w',
                     format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 # setting database
@@ -42,11 +42,11 @@ def process_time(process_name, execution_period=3):
     this_process_time = process_db.fetchone()
     if this_process_time is None:
         process_db.execute("INSERT INTO process_time (name, shop_name, execution_time) VALUES (?, ?, ?)",
-                           (process_name, database_shop_name, time.strftime("%Y %m %d-%H %M %S")))
+                           (process_name, database_shop_name, time.strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
         return False
-    time_difference = (datetime.strptime(time.strftime("%Y %m %d-%H %M %S"), '%Y %m %d-%H %M %S') -
-                       datetime.strptime(this_process_time[0], '%Y %m %d-%H %M %S'))
+    time_difference = (datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S') -
+                       datetime.strptime(this_process_time[0], '%Y-%m-%d %H:%M:%S'))
     if time_difference < timedelta(hours=execution_period):
         return True
     else:
@@ -170,7 +170,7 @@ def check_message_status():
                 print(msg_sending_error)
             os.remove('Message Screenshot/' + image_name + '.png')
     cursor.execute('UPDATE login_credential SET remark = ? WHERE id = ?',
-                   (time.strftime("%Y-%m-%d %H-%M-%S"), order))
+                   (time.strftime("%Y-%m-%d %H:%M:%S"), order))
     conn.commit()
     logging.info('Message status checked')
 
@@ -248,14 +248,11 @@ def home_inspection():
             campaign_day = int(time_elements[0].text)
             campaign_hour = int(time_elements[1].text)
             if campaign_day == 0 and campaign_hour <= 12:
-                campaign_cursor = conn.cursor()
-                campaign_cursor.execute('SELECT * FROM campaign_alart WHERE shop_name = ? AND title = ?',
-                                        (database_shop_name, campaign_title)).fetchone()
                 send_message('Join Campaign 彡*{}* 🪐{}Hour(s) left\n{}'.
                              format(database_shop_name, campaign_hour, campaign_title))
                 process_db.execute(
                     "UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
-                    (datetime.strptime(time.strftime("%Y %m %d-%H %M %S"), '%Y %m %d-%H %M %S') -
+                    (datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S') -
                      timedelta(hours=2), database_shop_name, 'home_inspection'))
                 conn.commit()
                 return True
@@ -265,7 +262,7 @@ def home_inspection():
         home_inspection()
 
     process_db.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
-                       (time.strftime("%Y %m %d-%H %M %S"), database_shop_name, 'home_inspection'))
+                       (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'home_inspection'))
     conn.commit()
 
 
@@ -337,7 +334,7 @@ def order_limit():
 
 def rts():
     process_db.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
-                       (time.strftime("%Y %m %d-%H %M %S"), database_shop_name, 'order_limit'))
+                       (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'order_limit'))
     conn.commit()
     try:
         order_no_element = driver.find_element(By.XPATH, "//span[contains(text(),'Pending')]")
@@ -379,10 +376,14 @@ def rts():
         try:
             time.sleep(2)
             wait.until(ec.visibility_of_element_located((By.XPATH, "//button[text()='Save invoice ID']")))
+            time.sleep(2)
             wait.until(ec.element_to_be_clickable((By.XPATH, "//button[text()='Save invoice ID']"))).click()
         except TimeoutException:
             pass
         try:
+            time.sleep(2)
+            wait.until(ec.visibility_of_element_located((By.XPATH, "//button[text()='Ready to ship']")))
+            time.sleep(2)
             wait.until(
                 ec.element_to_be_clickable((By.XPATH, "//button[contains(text(),'Ready to ship')]"))).click()
             time.sleep(2)
@@ -440,8 +441,14 @@ def stock_check():
     if driver.find_elements(By.CSS_SELECTOR, '.intl-tag-list'):
         send_message('Stock Out ↺ *{}*'.format(database_shop_name))
     process_db.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
-                       (time.strftime("%Y %m %d-%H %M %S"), database_shop_name, stock_check.__name__))
+                       (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, stock_check.__name__))
     conn.commit()
+
+
+def set_workspace(browser_driver):
+    browser_driver.get('chrome://extensions/shortcuts')
+    (browser_driver.find_element(By.XPATH, f"//div[contains(text(),'Open multiple temporary session')]/..")
+     .send_keys(Keys.ALT + 'N'))
 
 
 def set_browser():
@@ -453,6 +460,7 @@ def set_browser():
         browser_driver.set_page_load_timeout(20)
         db_mouse = webdriver.ActionChains(browser_driver)
         driver_wait = WebDriverWait(browser_driver, 10)
+        # set_workspace(browser_driver)
         return browser_driver, driver_wait, db_mouse
     except Exception as browser_error:
         print(browser_error)
@@ -528,6 +536,15 @@ def store_replied_message(chat_id, message_text, replied_message_text):
     except IndexError:
         bot.send_message(chat_id, "_Can't process your reply_࿐")
         return True
+    if message_text[0] == '$':
+        message_text = message_text[1:]
+        # Store the replied message in the database if already not present
+        external_reply_cursor.execute("SELECT * FROM auto_reply WHERE message = ?", (simplified_text(query),))
+        if external_reply_cursor.fetchone() is None:
+            external_reply_cursor.execute('INSERT INTO auto_reply (message, reply) VALUES (?, ?)',
+                                          (simplified_text(query), message_text))
+            external_reply_db.commit()
+            bot.send_message(chat_id, "_Reply saved successfully_࿐")
     external_reply_cursor.execute(
         'INSERT INTO external_reply (query, reply, shop_name, customer_name) VALUES (?, ?, ?, ?)',
         (simplified_text(query), message_text, shop_name, customer_name))
@@ -544,15 +561,15 @@ def echo_message(chat_id, message_text):
 
 # Handling external reply ended
 
-# service = Service(executable_path='driver/chromedriver.exe')
-service = Service(executable_path='/usr/bin/chromedriver')
+service = Service(executable_path='driver/chromedriver.exe')
+# service = Service(executable_path='/usr/bin/chromedriver')
 options = webdriver.ChromeOptions()
 # options.add_extension('driver/session.zip')
 options.page_load_strategy = 'eager'
 options.add_argument('--start-maximized')
 options.add_argument('--headless')
 options.add_argument('--disable-gpu')
-options.add_argument('--no-sandbox')
+# options.add_argument('--no-sandbox')
 options.add_argument('--disable-dev-shm-usage')
 options.add_argument('--ignore-certificate-errors')
 options.add_argument('--ignore-ssl-errors')
@@ -593,6 +610,11 @@ if __name__ == '__main__':
                     driver.quit()
                 except Exception as quit_error:
                     print(quit_error)
+
                 driver, wait, mouse = set_browser()
+                if not bot_thread.is_alive():
+                    bot_thread = threading.Thread(target=bot.polling, args=(None,))
+                    bot_thread.start()
+                    print('Message Thread Restarted')
             conn.commit()
         print('Cycle Completed')
