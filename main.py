@@ -28,6 +28,9 @@ auto_reply_db = conn.cursor()
 process_db = conn.cursor()
 common_db = conn.cursor()
 
+# Global variable
+extra_process = True
+
 # Setting bot data
 essential_cursor = conn.cursor()
 bot_token = essential_cursor.execute(
@@ -36,7 +39,9 @@ bot_token = essential_cursor.execute(
 bot = telebot.TeleBot(bot_token, parse_mode='Markdown')
 
 
-def process_time(process_name, execution_period=3):
+def process_time(process_name, execution_period=180):
+    if execution_period == 0:
+        execution_period = 180
     process_db.execute("SELECT execution_time FROM process_time WHERE name = ? AND shop_name = ?",
                        (process_name, database_shop_name))
     this_process_time = process_db.fetchone()
@@ -47,7 +52,7 @@ def process_time(process_name, execution_period=3):
         return False
     time_difference = (datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S') -
                        datetime.strptime(this_process_time[0], '%Y-%m-%d %H:%M:%S'))
-    if time_difference < timedelta(hours=execution_period):
+    if time_difference < timedelta(minutes=execution_period):
         return True
     else:
         return False
@@ -75,24 +80,28 @@ def login():
     new_cookie = json.dumps(driver.get_cookies())
     cursor.execute('UPDATE login_credential SET cookie = ? WHERE id = ?', (new_cookie, order))
     conn.commit()
-    logging.info('Login Successful')
+    print('Login Successful')
+    load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
 
 
 def send_message(message_text, notify=False):
-    # if database_shop_name == 'Unique Live shopping':
-    #     return True
-
     chat_id = '1783177827'  # -1001969295732
     bot.send_message(chat_id, message_text, disable_notification=notify)
 
 
 def load_cookies(cookie_file):
+    driver.switch_to.window(driver.window_handles[1])
+    load_page('https://sellercenter.daraz.com.bd/v2/home')
+    if 'daraz.com.bd/v2/home' in driver.current_url:
+        driver.switch_to.window(driver.window_handles[0])
+        return True
+    driver.switch_to.window(driver.window_handles[0])
     driver.delete_all_cookies()
     load_page('https://sellercenter.daraz.com.bd/apps/seller/login')
     cookies = json.loads(cookie_file)
     for cookie_data in cookies:
         driver.add_cookie(cookie_data)
-    logging.info('Cookies loaded')
+    print('Cookies loaded')
     login_status()
 
 
@@ -110,11 +119,9 @@ def to_md(text):
 
 
 def check_message_status():
-    logging.info('Checking message status')
-    # if 'https://sellercenter.daraz.com.bd/v2/chat/window' not in driver.current_url:
-    #     load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
-    load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
-    # total_msg = driver.find_element(By.CSS_SELECTOR, '[class^="SessionFilterOwnerTypeButton"]').text
+    print('Checking message status')
+    if 'chat/window' not in driver.current_url:
+        load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
     try:
         total_msg = wait.until(
             ec.presence_of_element_located((By.CSS_SELECTOR, '[class^="SessionFilterOwnerTypeButton"]'))).text
@@ -123,7 +130,13 @@ def check_message_status():
     except TimeoutException:
         driver.refresh()
     try:
-        wait.until(ec.presence_of_element_located((By.XPATH, "//span[contains(text(),'Unreplied')]"))).click()
+        wait.until(ec.presence_of_element_located((By.XPATH, "//span[contains(text(),'Unreplied')]")))
+        unreplied_filter_class = driver.find_element(
+            By.XPATH, "//span[contains(text(),'Unreplied')]").get_attribute('class')
+        if 'SessionFilterTagActive' not in unreplied_filter_class:
+            driver.find_element(By.XPATH, "//span[contains(text(),'Unreplied')]").click()
+        # wait.until(ec.
+        # presence_of_element_located((By.XPATH, "//span[contains(text(),'Unreplied')]"))).click()
         time.sleep(1)
         message_elements = driver.find_elements(By.CSS_SELECTOR, '[class^="SessionListItem"]')
     except NoSuchElementException:
@@ -146,6 +159,11 @@ def check_message_status():
             'SELECT reply FROM external_reply WHERE query = ? AND shop_name = ? AND customer_name = ?',
             (customer_msg, shop_name, sender_name))
         external_reply = auto_reply_db.fetchall()
+
+        common_db.execute(
+            'SELECT send_time FROM send_time WHERE (customer_name, query, shop_name) = (?, ?, ?)',
+            (sender_name, customer_msg, shop_name))
+        last_send_time = common_db.fetchone()
         if auto_reply:
             input_message(auto_reply)
             send_message('{} ♯{} ➤{}\n➥ {}'.format(
@@ -157,22 +175,39 @@ def check_message_status():
                              format(shop_name, msg_time, msg_telegram, to_md(single_reply[0])), True)
             auto_reply_db.execute('DELETE FROM external_reply WHERE query = ? AND shop_name = ?',
                                   (customer_msg, shop_name))
+            common_db.execute('DELETE FROM send_time WHERE (customer_name, query, shop_name) = (?, ?, ?)',
+                              (sender_name, customer_msg, shop_name))
             conn.commit()
         else:
+            if last_send_time is not None:
+                time_difference = (
+                        datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S') -
+                        datetime.strptime(last_send_time[0], '%Y-%m-%d %H:%M:%S'))
+                if time_difference < timedelta(minutes=30):
+                    continue
             image_name = shop_name + '-' + simplified_text(sender_name)
             driver.save_screenshot('Message Screenshot/' + image_name + '.png')
             try:
-                if database_shop_name != 'Unique Live shopping':
-                    bot.send_photo('1783177827', open('Message Screenshot/' + image_name + '.png', 'rb'))
+                bot.send_photo('1783177827', open('Message Screenshot/' + image_name + '.png', 'rb'))
+                time.sleep(2)
                 send_message('*{}* ♯{} ➤{}\n࿐{}'.
                              format(shop_name, msg_time, msg_telegram, to_md(sender_name)))
             except Exception as msg_sending_error:
                 print(msg_sending_error)
             os.remove('Message Screenshot/' + image_name + '.png')
+        if last_send_time is None:
+            common_db.execute(
+                'INSERT INTO send_time (customer_name, query, shop_name, send_time) VALUES (?, ?, ?, ?)',
+                (sender_name, customer_msg, shop_name, time.strftime("%Y-%m-%d %H:%M:%S")))
+        else:
+            common_db.execute(
+                'UPDATE send_time SET send_time = ? WHERE (customer_name, query, shop_name) = (?, ?, ?)',
+                (time.strftime("%Y-%m-%d %H:%M:%S"), sender_name, customer_msg, shop_name))
+        conn.commit()
     cursor.execute('UPDATE login_credential SET remark = ? WHERE id = ?',
                    (time.strftime("%Y-%m-%d %H:%M:%S"), order))
     conn.commit()
-    logging.info('Message status checked')
+    print('Message status checked')
 
 
 def home_metrics(text):
@@ -190,6 +225,7 @@ def to_float(text):
 def home_inspection():
     if process_time('home_inspection'):
         return True
+    print('Home Inspection Started')
     load_page('https://sellercenter.daraz.com.bd/v2/home')
     try:
         wait.until(ec.element_to_be_clickable((By.CSS_SELECTOR, '.learMoreButtonStyle'))).click()
@@ -247,7 +283,7 @@ def home_inspection():
             campaign_title = campaign.find_element(By.CSS_SELECTOR, '.singleCampaignEventTitleStyle').text
             campaign_day = int(time_elements[0].text)
             campaign_hour = int(time_elements[1].text)
-            if campaign_day == 0 and campaign_hour <= 12:
+            if (campaign_day == 0 and campaign_hour <= 12) or campaign_day < 0:
                 send_message('Join Campaign 彡*{}* 🪐{}Hour(s) left\n{}'.
                              format(database_shop_name, campaign_hour, campaign_title))
                 process_db.execute(
@@ -264,18 +300,22 @@ def home_inspection():
     process_db.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
                        (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'home_inspection'))
     conn.commit()
+    print('Home Inspection Completed')
 
 
 def message_scraping():  # inside message block
     message_brief = ''
     message_summary = ''
     try:
+        wait.until_not(
+            ec.presence_of_all_elements_located((By.CSS_SELECTOR, '[class^="PanelMain"] .anticon-loading')))
         wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, '.user-type-1')))
     except TimeoutException:
+        driver.refresh()
         check_message_status()
     msg_window = wait.until(
         ec.presence_of_element_located((By.CSS_SELECTOR, '[class^="scrollbar-styled MessageList"]')))
-    time.sleep(2)
+    mouse.move_to_element(msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1]).perform()
     for msg_block in msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[::-1]:
         msg_block_class = msg_block.get_attribute('class')
         if 'user-type-2' in msg_block_class:
@@ -296,13 +336,13 @@ def message_scraping():  # inside message block
             product_details = msg_block.find_element(By.CSS_SELECTOR, '.lzd-pro-desc').text
             message_summary += '\nProduct: ' + product_details
         elif 'row-card-image' in msg_block_class:
+            mouse.move_to_element(
+                msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1]).perform()
             message_summary += ('\nImage: ' + msg_block.
                                 find_element(By.CSS_SELECTOR, 'img').get_attribute('src'))
         else:
             message_summary += '\n' + msg_block.text
 
-    last_element = msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1]
-    driver.execute_script("arguments[0].scrollIntoView();", last_element)
     return re.sub(r'➛$', '', message_brief).strip()
 
 
@@ -315,17 +355,22 @@ def input_message(auto_reply):
     wait.until_not(ec.element_to_be_clickable(sent_button))
 
 
+def campaign_overview():
+    load_page('https://sellercenter.daraz.com.bd/v2/campaign/portal#/', '.next-tabs-nav-scroll')
+
+
 def order_limit():
     if process_time('order_limit'):
         return True
-    load_page('https://sellercenter.daraz.com.bd/order/query?tab=pending')
+    print('Order Limit Started')
+    load_page('https://sellercenter.daraz.com.bd/order/query?tab=pending', 'table td .next-table-empty')
     try:
         if (wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, 'table td .next-table-empty')))
                 .text == 'No Data'):
             return True
         order_limit_status = driver.find_element(By.CSS_SELECTOR, '.notices-container').text
     except NoSuchElementException:
-        order_limit_status = False
+        order_limit_status = ''
     if ("Please process existing orders in order to continue to receive more orders." in order_limit_status
             and order_limit_status != ''):
         send_message(database_shop_name + ': ' + order_limit_status)
@@ -333,6 +378,7 @@ def order_limit():
 
 
 def rts():
+    print('RTS Started')
     process_db.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
                        (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'order_limit'))
     conn.commit()
@@ -404,14 +450,18 @@ def move_click(move_element, click_element):
 def load_page(page_url, element='body'):
     try:
         driver.get(page_url)
+        wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, element)))
     except TimeoutException:
-        if page_url not in driver.current_url or driver.find_element(By.CSS_SELECTOR, element).text == '':
-            load_page(page_url)
+        print('Page loading failed')
+        load_page(page_url, element)
 
 
 def question():
-    logging.info('Checking question status')
-    load_page('https://sellercenter.daraz.com.bd/msg/index')
+    if process_time('question', 10):
+        return True
+    print('Checking question status')
+    load_page('https://sellercenter.daraz.com.bd/msg/index', '.tab-zone')
+    question_element = 'Try Failed'
     try:
         # question_element = driver.find_element(By.XPATH, "//div[contains(text(),'Customer Question')]").text
         question_element = wait.until(
@@ -419,20 +469,21 @@ def question():
         # Get the number of question
         question_count = int(question_element.split('(')[1].split(')')[0])
         if question_count > 0:
-            send_message('*{}* has {} question(s)'.format(database_shop_name, question_count))
-    except NoSuchElementException:
-        driver.refresh()
-        question()
-    except TimeoutException:
-        driver.refresh()
-        question()
-    except IndexError:
-        pass
+            send_message('*{}* has _{}_ question(s)'.format(database_shop_name, question_count))
+    except Exception as question_error:
+        print(question_error, end=': ')
+        print(question_element)
+        return True
+    print('Question status checked')
+    process_db.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
+                       (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'question'))
+    conn.commit()
 
 
 def stock_check():
-    if process_time(stock_check.__name__, 24):
+    if process_time(stock_check.__name__, 1440):
         return True
+    print('Stock Check Started')
     load_page('https://sellercenter.daraz.com.bd/v2/product/list')
     try:
         wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, '.product-list-table')))
@@ -443,12 +494,7 @@ def stock_check():
     process_db.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
                        (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, stock_check.__name__))
     conn.commit()
-
-
-def set_workspace(browser_driver):
-    browser_driver.get('chrome://extensions/shortcuts')
-    (browser_driver.find_element(By.XPATH, f"//div[contains(text(),'Open multiple temporary session')]/..")
-     .send_keys(Keys.ALT + 'N'))
+    print('Stock Check Completed')
 
 
 def set_browser():
@@ -460,7 +506,7 @@ def set_browser():
         browser_driver.set_page_load_timeout(20)
         db_mouse = webdriver.ActionChains(browser_driver)
         driver_wait = WebDriverWait(browser_driver, 10)
-        # set_workspace(browser_driver)
+        browser_driver.execute_script("window.open('');")
         return browser_driver, driver_wait, db_mouse
     except Exception as browser_error:
         print(browser_error)
@@ -468,17 +514,37 @@ def set_browser():
 
 
 def login_status():
-    try:
-        load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
-    except TimeoutException:
-        pass
+    load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
     if 'chat/window' not in driver.current_url:
-        logging.error('Login Failed via cookies')
+        print('Login Failed via cookies')
         login()
 
 
-def window_handler():
-    driver.execute_script("window.open('', '_blank');")
+def create_instance():
+    cursor.execute('SELECT * FROM login_credential')
+    drivers_array = []
+    waits_array = []
+    mouses_array = []
+    try:
+        for shop_info in cursor.fetchall():
+            ins_driver, ins_wait, ins_mouse = set_browser()
+            drivers_array.append(ins_driver)
+            waits_array.append(ins_wait)
+            mouses_array.append(ins_mouse)
+            print(shop_info[1] + ' : Instance Created')
+    except Exception as instance_error:
+        print(instance_error)
+        close_instance(drivers_array)
+        create_instance()
+    return drivers_array, waits_array, mouses_array
+
+
+def close_instance(drivers_array):
+    for current_driver in drivers_array:
+        try:
+            current_driver.quit()
+        except Exception as driver_error:
+            print(driver_error)
 
 
 def wait_for_connection():
@@ -509,12 +575,12 @@ def send_welcome(message):
 def handle_message(message):
     chat_id = message.chat.id
     message_text = message.text
-    replied_message_text = message.reply_to_message.text
-    if not replied_message_text:
-        replied_message_text = message.reply_to_message.caption
 
     # Check if the message is a reply to another message
     if message.reply_to_message:
+        replied_message_text = message.reply_to_message.text
+        if not replied_message_text:
+            replied_message_text = message.reply_to_message.caption
         # Store replied messages in the database
         store_replied_message(chat_id, message_text, replied_message_text)
     else:
@@ -561,15 +627,16 @@ def echo_message(chat_id, message_text):
 
 # Handling external reply ended
 
-service = Service(executable_path='driver/chromedriver.exe')
-# service = Service(executable_path='/usr/bin/chromedriver')
+# Identify operating system
+
+# service = Service(executable_path='driver/chromedriver.exe')
+service = Service(executable_path='/usr/bin/chromedriver')
 options = webdriver.ChromeOptions()
-# options.add_extension('driver/session.zip')
 options.page_load_strategy = 'eager'
 options.add_argument('--start-maximized')
 options.add_argument('--headless')
 options.add_argument('--disable-gpu')
-# options.add_argument('--no-sandbox')
+options.add_argument('--no-sandbox')
 options.add_argument('--disable-dev-shm-usage')
 options.add_argument('--ignore-certificate-errors')
 options.add_argument('--ignore-ssl-errors')
@@ -580,8 +647,20 @@ options.add_argument("--zoom=1.5")
 options.add_argument(
     "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/92.0.4515.159 Safari/537.36")
+options.add_argument("--mute-audio")
+options.add_argument("--disable-extensions")
+options.add_argument("--disable-plugins-discovery")
+options.add_argument("--disable-blink-features=AutomationControlled")
+options.add_argument("--disable-infobars")
+options.add_argument("--disable-notifications")
+options.add_argument("--disable-save-password-bubble")
+options.add_argument("--disable-single-click-autofill")
+options.add_argument("--disable-translate")
+options.add_argument("--disable-webgl")
+options.add_argument("--enable-automation")
+options.add_argument("--enable-local-file-accesses")
 
-driver, wait, mouse = set_browser()
+driver_array, wait_array, mouse_array = create_instance()
 if __name__ == '__main__':
     # Start a separate thread to continuously check for messages
     bot_thread = threading.Thread(target=bot.polling, args=(None,))
@@ -592,29 +671,42 @@ if __name__ == '__main__':
         cursor.execute('SELECT * FROM login_credential')
         for row in cursor.fetchall():
             order, database_shop_name, email, password, cookie, remark = row
-            if database_shop_name == 'Unique Live shopping':
-                continue
-            print(f"ID: {order}\nShop Name: {database_shop_name}\nEmail: {email}\n")
+            driver = driver_array[order - 1]
+            wait = wait_array[order - 1]
+            mouse = mouse_array[order - 1]
+            print(f"ID: {order}\tShop Name: {database_shop_name}")
             try:
                 load_cookies(cookie)
                 check_message_status()
-                home_inspection()
-                order_limit()
-                question()
-                stock_check()
+                # campaign_overview()
+                driver.switch_to.window(driver.window_handles[1])
+                process_list = (('question', 10),
+                                ('home_inspection', 0),
+                                ('order_limit', 0),
+                                ('stock_check', 1440))
+                for process in process_list:
+                    if extra_process and not process_time(process[0], process[1]):
+                        try:
+                            globals()[process[0]]()
+                        except Exception as process_error:
+                            print(process_error)
+                            wait_for_connection()
+                            extra_process = True
+                            continue
+                            driver.save_screenshot('Error Screenshot/' + database_shop_name + '.png')
+                        extra_process = False
             except Exception as error:
                 print(error)
                 driver.save_screenshot('Error Screenshot/' + database_shop_name +
                                        time.strftime(" %Y%m%d-%H%M%S") + '.png')
-                try:
-                    driver.quit()
-                except Exception as quit_error:
-                    print(quit_error)
-
-                driver, wait, mouse = set_browser()
-                if not bot_thread.is_alive():
-                    bot_thread = threading.Thread(target=bot.polling, args=(None,))
-                    bot_thread.start()
-                    print('Message Thread Restarted')
+                close_instance(driver_array)
+                driver_array, wait_array, mouse_array = create_instance()
             conn.commit()
+            if not bot_thread.is_alive():
+                bot_thread = threading.Thread(target=bot.polling, args=(None,))
+                bot_thread.start()
+                print('Message Thread Restarted')
         print('Cycle Completed')
+        common_db.execute('DELETE FROM send_time WHERE send_time < ?',
+                          (datetime.now() - timedelta(minutes=30),))
+        extra_process = True
