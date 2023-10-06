@@ -24,9 +24,6 @@ logging.basicConfig(level=logging.DEBUG, filename='bot.log', filemode='w',
 # setting database
 conn = sqlite3.connect('shop_data.db')
 cursor = conn.cursor()
-auto_reply_db = conn.cursor()
-process_db = conn.cursor()
-common_db = conn.cursor()
 
 # Global variable
 extra_process = True
@@ -42,12 +39,12 @@ bot = telebot.TeleBot(bot_token, parse_mode='Markdown')
 def process_time(process_name, execution_period=180):
     if execution_period == 0:
         execution_period = 180
-    process_db.execute("SELECT execution_time FROM process_time WHERE name = ? AND shop_name = ?",
-                       (process_name, database_shop_name))
-    this_process_time = process_db.fetchone()
+    cursor.execute("SELECT execution_time FROM process_time WHERE name = ? AND shop_name = ?",
+                   (process_name, database_shop_name))
+    this_process_time = cursor.fetchone()
     if this_process_time is None:
-        process_db.execute("INSERT INTO process_time (name, shop_name, execution_time) VALUES (?, ?, ?)",
-                           (process_name, database_shop_name, time.strftime("%Y-%m-%d %H:%M:%S")))
+        cursor.execute("INSERT INTO process_time (name, shop_name, execution_time) VALUES (?, ?, ?)",
+                       (process_name, database_shop_name, time.strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
         return False
     time_difference = (datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S') -
@@ -73,10 +70,9 @@ def login():
     driver.find_element(By.CSS_SELECTOR, ".loginButtonStyle").click()
     try:
         wait.until(ec.url_contains('https://sellercenter.daraz.com.bd/v2/home'))
-    except Exception as login_error:
-        print(login_error)
+    except TimeoutException:
         login()
-    # print(f"Response Code: {requests.head(driver.current_url).status_code}")
+        return True
     new_cookie = json.dumps(driver.get_cookies())
     cursor.execute('UPDATE login_credential SET cookie = ? WHERE id = ?', (new_cookie, order))
     conn.commit()
@@ -119,9 +115,16 @@ def to_md(text):
 
 
 def check_message_status():
-    print('Checking message status')
-    if 'chat/window' not in driver.current_url:
+    if 'chat/window' not in driver.current_url or process_time('check_message_status', 1440):
         load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
+        global extra_process
+        extra_process = False
+    try:
+        wait.until_not(ec.presence_of_all_elements_located((By.CSS_SELECTOR, '.chat-spin-dot-item')))
+    except TimeoutException:
+        driver.refresh()
+        check_message_status()
+        return True
     try:
         total_msg = wait.until(
             ec.presence_of_element_located((By.CSS_SELECTOR, '[class^="SessionFilterOwnerTypeButton"]'))).text
@@ -129,6 +132,7 @@ def check_message_status():
             driver.refresh()
     except TimeoutException:
         driver.refresh()
+    print('Checking message status')
     try:
         wait.until(ec.presence_of_element_located((By.XPATH, "//span[contains(text(),'Unreplied')]")))
         unreplied_filter_class = driver.find_element(
@@ -153,17 +157,17 @@ def check_message_status():
         msg_telegram = re.sub(r'([\[*_])', r'\\\1', msg_title)
         customer_msg = simplified_text(msg_title)
         sender_name = message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTarget"]').text
-        auto_reply_db.execute("SELECT reply FROM auto_reply WHERE message = ?", (customer_msg,))
-        auto_reply = auto_reply_db.fetchall()
-        auto_reply_db.execute(
+        cursor.execute("SELECT reply FROM auto_reply WHERE message = ?", (customer_msg,))
+        auto_reply = cursor.fetchall()
+        cursor.execute(
             'SELECT reply FROM external_reply WHERE query = ? AND shop_name = ? AND customer_name = ?',
             (customer_msg, shop_name, sender_name))
-        external_reply = auto_reply_db.fetchall()
+        external_reply = cursor.fetchall()
 
-        common_db.execute(
+        cursor.execute(
             'SELECT send_time FROM send_time WHERE (customer_name, query, shop_name) = (?, ?, ?)',
             (sender_name, customer_msg, shop_name))
-        last_send_time = common_db.fetchone()
+        last_send_time = cursor.fetchone()
         if auto_reply:
             input_message(auto_reply)
             send_message('{} ♯{} ➤{}\n➥ {}'.format(
@@ -173,10 +177,10 @@ def check_message_status():
             for single_reply in external_reply:
                 send_message('{} ♯{} ➤{}\n╰┈➤ {}'.
                              format(shop_name, msg_time, msg_telegram, to_md(single_reply[0])), True)
-            auto_reply_db.execute('DELETE FROM external_reply WHERE query = ? AND shop_name = ?',
-                                  (customer_msg, shop_name))
-            common_db.execute('DELETE FROM send_time WHERE (customer_name, query, shop_name) = (?, ?, ?)',
-                              (sender_name, customer_msg, shop_name))
+            cursor.execute('DELETE FROM external_reply WHERE query = ? AND shop_name = ?',
+                           (customer_msg, shop_name))
+            cursor.execute('DELETE FROM send_time WHERE (customer_name, query, shop_name) = (?, ?, ?)',
+                           (sender_name, customer_msg, shop_name))
             conn.commit()
         else:
             if last_send_time is not None:
@@ -196,11 +200,11 @@ def check_message_status():
                 print(msg_sending_error)
             os.remove('Message Screenshot/' + image_name + '.png')
         if last_send_time is None:
-            common_db.execute(
+            cursor.execute(
                 'INSERT INTO send_time (customer_name, query, shop_name, send_time) VALUES (?, ?, ?, ?)',
                 (sender_name, customer_msg, shop_name, time.strftime("%Y-%m-%d %H:%M:%S")))
         else:
-            common_db.execute(
+            cursor.execute(
                 'UPDATE send_time SET send_time = ? WHERE (customer_name, query, shop_name) = (?, ?, ?)',
                 (time.strftime("%Y-%m-%d %H:%M:%S"), sender_name, customer_msg, shop_name))
         conn.commit()
@@ -247,12 +251,12 @@ def home_inspection():
             '%Orders Processed Within SLA': to_float(home_metrics('%Orders Processed Within SLA')),
         }
         for key, value in scrap_element.items():
-            common_db.execute(
+            cursor.execute(
                 'SELECT metrics_value FROM home_metrics WHERE (metrics_type, shop_name) = (?, ?)',
                 (key, database_shop_name))
-            home_metrics_db = common_db.fetchone()
+            home_metrics_db = cursor.fetchone()
             if home_metrics_db is None:
-                common_db.execute(
+                cursor.execute(
                     'INSERT INTO home_metrics (metrics_type, metrics_value, shop_name) VALUES (?, ?, ?)',
                     (key, value, database_shop_name))
                 conn.commit()
@@ -263,7 +267,7 @@ def home_inspection():
                 send_message('{}➴ {}*~*{} ⊂⊃ *{}*'.format(key, value, home_metrics_db[0], database_shop_name))
             else:
                 continue
-            common_db.execute(
+            cursor.execute(
                 'UPDATE home_metrics SET metrics_value = ? WHERE (metrics_type, shop_name) = (?, ?)',
                 (value, key, database_shop_name))
             conn.commit()
@@ -286,7 +290,7 @@ def home_inspection():
             if (campaign_day == 0 and campaign_hour <= 12) or campaign_day < 0:
                 send_message('Join Campaign 彡*{}* 🪐{}Hour(s) left\n{}'.
                              format(database_shop_name, campaign_hour, campaign_title))
-                process_db.execute(
+                cursor.execute(
                     "UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
                     (datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S') -
                      timedelta(hours=2), database_shop_name, 'home_inspection'))
@@ -297,8 +301,8 @@ def home_inspection():
         driver.refresh()
         home_inspection()
 
-    process_db.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
-                       (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'home_inspection'))
+    cursor.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
+                   (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'home_inspection'))
     conn.commit()
     print('Home Inspection Completed')
 
@@ -356,7 +360,97 @@ def input_message(auto_reply):
 
 
 def campaign_overview():
-    load_page('https://sellercenter.daraz.com.bd/v2/campaign/portal#/', '.next-tabs-nav-scroll')
+    driver.switch_to.window(driver.window_handles[1])
+    load_page('https://sellercenter.daraz.com.bd/v2/campaign/portal', '.next-tabs-nav-scroll')
+    print('Campaign Overview Started')
+    for main_tab in driver.find_elements(
+            By.CSS_SELECTOR, '#centerContent > :nth-child(1) > :nth-child(1) > :nth-child(3) li'):
+        wait.until(ec.element_to_be_clickable(main_tab))
+        main_tab.click()
+        time.sleep(1)
+        for sub_tab in driver.find_elements(
+                By.CSS_SELECTOR, '#centerContent > :nth-child(1) > :nth-child(1) > :nth-child(4) li'):
+            if sub_tab.text == '':
+                continue
+            wait.until(ec.element_to_be_clickable(sub_tab))
+            sub_tab.click()
+            time.sleep(1)
+            for type_tab in driver.find_elements(
+                    By.CSS_SELECTOR, '#centerContent > :nth-child(1) > :nth-child(1) > :nth-child(5) li'):
+                try:
+                    wait.until(ec.element_to_be_clickable(type_tab))
+                    type_tab.click()
+                    time.sleep(2)
+                    campaign_element = wait.until(ec.
+                                                  presence_of_element_located((By.CSS_SELECTOR, 'tbody tr')))
+                    if campaign_element.text == 'No Data' or campaign_element.text == '':
+                        continue
+                    if type_tab.text == 'Special Invitation':
+                        for campaign in wait.until(
+                                ec.presence_of_all_elements_located((By.CSS_SELECTOR, 'tbody tr'))):
+                            status = campaign.find_element(By.CSS_SELECTOR, 'td[name="status"]').text
+                            if status == 'Pending':
+                                name = campaign.find_element(By.CSS_SELECTOR, 'td[name="name"]').text
+                                end_date = (campaign.find_element(
+                                    By.CSS_SELECTOR, "td[name='registerEndTime']").text
+                                            .split('GMT')[0].strip())
+                                time_left = datetime.strptime(end_date, '%d %b %Y %H:%M') - datetime.now()
+                                if time_left < timedelta(hours=12):
+                                    hour_left = time_left.seconds // 3600
+                                    minute_left = (time_left.seconds % 3600) // 60
+                                    send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n{}'.
+                                                 format(database_shop_name, hour_left, minute_left, name))
+                    elif type_tab.text == 'Available Campaign':
+                        day_left = 99
+                        hour_left = 0
+                        minute_left = 0
+                        for campaign in wait.until(
+                                ec.presence_of_all_elements_located((By.CSS_SELECTOR, 'tbody tr'))):
+                            name = campaign.find_element(By.CSS_SELECTOR, 'td[name="name"]').text
+                            end_time = campaign.find_element(By.CSS_SELECTOR, ".count-down").text
+                            for time_part in end_time.split(':'):
+                                if time_part.endswith("d"):
+                                    day_left = int(time_part[:-1])
+                                elif time_part.endswith("h"):
+                                    hour_left = int(time_part[:-1])
+                                elif time_part.endswith("m"):
+                                    minute_left = int(time_part[:-1])
+                            if day_left == 0 and hour_left <= 12:
+                                send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n{}'.
+                                             format(database_shop_name, hour_left, minute_left, name))
+                    elif sub_tab.text == 'Flash Sale' and type_tab.text == 'Registered Campaign':
+                        print('Flash Sale')
+                        campaign = wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, 'tbody tr')))
+                        status = campaign.find_element(By.CSS_SELECTOR, 'td[name="status"]').text
+                        if status == 'Online':
+                            (mouse.key_down(Keys.CONTROL).click(
+                                campaign.find_element(By.CSS_SELECTOR, 'button')).
+                             key_up(Keys.CONTROL).perform())
+                            driver.switch_to.window(driver.window_handles[2])
+                            try:
+                                wait.until(ec.
+                                           presence_of_element_located((By.CSS_SELECTOR, '.next-tabs-bar')))
+                                approved_text = wait.until(ec.presence_of_element_located(
+                                    (By.XPATH, "//div[contains(text(),'Approved')]"))).text
+                                approved_product = int(approved_text.split('(')[1].split(')')[0])
+                                pending_text = wait.until(ec.presence_of_element_located(
+                                    (By.XPATH, "//div[contains(text(),'Pending Allocation')]"))).text
+                                pending_product = int(pending_text.split('(')[1].split(')')[0])
+                                if approved_product > 0:
+                                    send_message('Flash Sale Approved ↺ *{}*'.format(database_shop_name))
+                                elif pending_product > 0:
+                                    send_message('Flash Sale Pending ↺ *{}*'.format(database_shop_name))
+                            except Exception as flash_sale_error:
+                                print(flash_sale_error)
+                            driver.close()
+                            driver.switch_to.window(driver.window_handles[1])
+                        print('Flash Sale Completed')
+                        break
+                    else:
+                        break
+                except Exception as campaign_overview_error:
+                    print(campaign_overview_error)
+    print('Campaign Overview Completed')
 
 
 def order_limit():
@@ -379,8 +473,8 @@ def order_limit():
 
 def rts():
     print('RTS Started')
-    process_db.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
-                       (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'order_limit'))
+    cursor.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
+                   (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'order_limit'))
     conn.commit()
     try:
         order_no_element = driver.find_element(By.XPATH, "//span[contains(text(),'Pending')]")
@@ -448,11 +542,18 @@ def move_click(move_element, click_element):
 
 
 def load_page(page_url, element='body'):
+    triumph = 0
     try:
         driver.get(page_url)
         wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, element)))
     except TimeoutException:
         print('Page loading failed')
+        triumph += 1
+        if triumph > 5:
+            print('Page loading failed {} times'.format(triumph))
+            wait_for_connection()
+            if 'chat/window' not in driver.current_url:
+                return True
         load_page(page_url, element)
 
 
@@ -460,7 +561,7 @@ def question():
     if process_time('question', 10):
         return True
     print('Checking question status')
-    load_page('https://sellercenter.daraz.com.bd/msg/index', '.tab-zone')
+    load_page('https://sellercenter.daraz.com.bd/msg/index', '[role="tablist"]')
     question_element = 'Try Failed'
     try:
         # question_element = driver.find_element(By.XPATH, "//div[contains(text(),'Customer Question')]").text
@@ -475,8 +576,8 @@ def question():
         print(question_element)
         return True
     print('Question status checked')
-    process_db.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
-                       (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'question'))
+    cursor.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
+                   (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'question'))
     conn.commit()
 
 
@@ -491,8 +592,8 @@ def stock_check():
         stock_check()
     if driver.find_elements(By.CSS_SELECTOR, '.intl-tag-list'):
         send_message('Stock Out ↺ *{}*'.format(database_shop_name))
-    process_db.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
-                       (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, stock_check.__name__))
+    cursor.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
+                   (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, stock_check.__name__))
     conn.commit()
     print('Stock Check Completed')
 
@@ -629,14 +730,14 @@ def echo_message(chat_id, message_text):
 
 # Identify operating system
 
-# service = Service(executable_path='driver/chromedriver.exe')
-service = Service(executable_path='/usr/bin/chromedriver')
+service = Service(executable_path='driver/chromedriver.exe')
+# service = Service(executable_path='/usr/bin/chromedriver')
 options = webdriver.ChromeOptions()
 options.page_load_strategy = 'eager'
 options.add_argument('--start-maximized')
 options.add_argument('--headless')
 options.add_argument('--disable-gpu')
-options.add_argument('--no-sandbox')
+# options.add_argument('--no-sandbox')
 options.add_argument('--disable-dev-shm-usage')
 options.add_argument('--ignore-certificate-errors')
 options.add_argument('--ignore-ssl-errors')
@@ -657,7 +758,6 @@ options.add_argument("--disable-save-password-bubble")
 options.add_argument("--disable-single-click-autofill")
 options.add_argument("--disable-translate")
 options.add_argument("--disable-webgl")
-options.add_argument("--enable-automation")
 options.add_argument("--enable-local-file-accesses")
 
 driver_array, wait_array, mouse_array = create_instance()
@@ -678,12 +778,12 @@ if __name__ == '__main__':
             try:
                 load_cookies(cookie)
                 check_message_status()
-                # campaign_overview()
                 driver.switch_to.window(driver.window_handles[1])
                 process_list = (('question', 10),
                                 ('home_inspection', 0),
                                 ('order_limit', 0),
-                                ('stock_check', 1440))
+                                ('stock_check', 1440),
+                                ('campaign_overview', 1440))
                 for process in process_list:
                     if extra_process and not process_time(process[0], process[1]):
                         try:
@@ -707,6 +807,6 @@ if __name__ == '__main__':
                 bot_thread.start()
                 print('Message Thread Restarted')
         print('Cycle Completed')
-        common_db.execute('DELETE FROM send_time WHERE send_time < ?',
-                          (datetime.now() - timedelta(minutes=30),))
+        cursor.execute('DELETE FROM send_time WHERE send_time < ?',
+                       (datetime.now() - timedelta(minutes=30),))
         extra_process = True
