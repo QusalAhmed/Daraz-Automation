@@ -115,10 +115,12 @@ def to_md(text):
 
 
 def check_message_status():
-    if 'chat/window' not in driver.current_url or process_time('check_message_status', 1440):
+    if 'chat/window' not in driver.current_url or not process_time('check_message_status', 1440):
         load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
         global extra_process
         extra_process = False
+        cursor.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
+                       (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'check_message_status'))
     try:
         wait.until_not(ec.presence_of_all_elements_located((By.CSS_SELECTOR, '.chat-spin-dot-item')))
     except TimeoutException:
@@ -139,9 +141,7 @@ def check_message_status():
             By.XPATH, "//span[contains(text(),'Unreplied')]").get_attribute('class')
         if 'SessionFilterTagActive' not in unreplied_filter_class:
             driver.find_element(By.XPATH, "//span[contains(text(),'Unreplied')]").click()
-        # wait.until(ec.
-        # presence_of_element_located((By.XPATH, "//span[contains(text(),'Unreplied')]"))).click()
-        time.sleep(1)
+            time.sleep(1)
         message_elements = driver.find_elements(By.CSS_SELECTOR, '[class^="SessionListItem"]')
     except NoSuchElementException:
         return True
@@ -227,8 +227,6 @@ def to_float(text):
 
 
 def home_inspection():
-    if process_time('home_inspection'):
-        return True
     print('Home Inspection Started')
     load_page('https://sellercenter.daraz.com.bd/v2/home')
     try:
@@ -264,7 +262,7 @@ def home_inspection():
             if float(value) > float(home_metrics_db[0]):
                 send_message('{}➶ {}*~*{} ⊂⊃ *{}*'.format(key, home_metrics_db[0], value, database_shop_name))
             elif float(value) < float(home_metrics_db[0]):
-                send_message('{}➴ {}*~*{} ⊂⊃ *{}*'.format(key, value, home_metrics_db[0], database_shop_name))
+                send_message('{}➴ {}*~*{} ⊂⊃ *{}*'.format(key, home_metrics_db[0], value, database_shop_name))
             else:
                 continue
             cursor.execute(
@@ -360,6 +358,11 @@ def input_message(auto_reply):
 
 
 def campaign_overview():
+    current_time = datetime.now().time()
+    start_time = datetime.strptime('02:00:00', '%H:%M:%S').time()
+    end_time = datetime.strptime('10:00:00', '%H:%M:%S').time()
+    if current_time < start_time or current_time >= end_time:
+        return True
     driver.switch_to.window(driver.window_handles[1])
     load_page('https://sellercenter.daraz.com.bd/v2/campaign/portal', '.next-tabs-nav-scroll')
     print('Campaign Overview Started')
@@ -547,7 +550,7 @@ def load_page(page_url, element='body'):
         driver.get(page_url)
         wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, element)))
     except TimeoutException:
-        print('Page loading failed')
+        print('Page loading failed: {}'.format(page_url))
         triumph += 1
         if triumph > 5:
             print('Page loading failed {} times'.format(triumph))
@@ -558,13 +561,9 @@ def load_page(page_url, element='body'):
 
 
 def question():
-    if process_time('question', 10):
-        return True
     print('Checking question status')
     load_page('https://sellercenter.daraz.com.bd/msg/index', '[role="tablist"]')
-    question_element = 'Try Failed'
     try:
-        # question_element = driver.find_element(By.XPATH, "//div[contains(text(),'Customer Question')]").text
         question_element = wait.until(
             ec.presence_of_element_located((By.XPATH, "//div[contains(text(),'Customer Question')]"))).text
         # Get the number of question
@@ -572,8 +571,7 @@ def question():
         if question_count > 0:
             send_message('*{}* has _{}_ question(s)'.format(database_shop_name, question_count))
     except Exception as question_error:
-        print(question_error, end=': ')
-        print(question_element)
+        print(question_error)
         return True
     print('Question status checked')
     cursor.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
@@ -730,14 +728,16 @@ def echo_message(chat_id, message_text):
 
 # Identify operating system
 
-service = Service(executable_path='driver/chromedriver.exe')
-# service = Service(executable_path='/usr/bin/chromedriver')
+# Check operating system
+
+# service = Service(executable_path='driver/chromedriver.exe')
+service = Service(executable_path='/usr/bin/chromedriver')
 options = webdriver.ChromeOptions()
 options.page_load_strategy = 'eager'
 options.add_argument('--start-maximized')
 options.add_argument('--headless')
 options.add_argument('--disable-gpu')
-# options.add_argument('--no-sandbox')
+options.add_argument('--no-sandbox')
 options.add_argument('--disable-dev-shm-usage')
 options.add_argument('--ignore-certificate-errors')
 options.add_argument('--ignore-ssl-errors')
@@ -759,6 +759,7 @@ options.add_argument("--disable-single-click-autofill")
 options.add_argument("--disable-translate")
 options.add_argument("--disable-webgl")
 options.add_argument("--enable-local-file-accesses")
+options.add_argument("--enable-automation")
 
 driver_array, wait_array, mouse_array = create_instance()
 if __name__ == '__main__':
@@ -791,7 +792,6 @@ if __name__ == '__main__':
                         except Exception as process_error:
                             print(process_error)
                             wait_for_connection()
-                            extra_process = True
                             continue
                             driver.save_screenshot('Error Screenshot/' + database_shop_name + '.png')
                         extra_process = False
