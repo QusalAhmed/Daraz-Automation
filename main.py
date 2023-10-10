@@ -19,7 +19,7 @@ from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.common.keys import Keys
 
 # Configure logging settings
-logging.basicConfig(level=logging.DEBUG, filename='bot.log', filemode='w',
+logging.basicConfig(level=logging.CRITICAL, filename='bot.log', filemode='w',
                     format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 # setting database
@@ -173,7 +173,7 @@ def check_message_status():
             return True
         message_elements = driver.find_elements(By.CSS_SELECTOR, '[class^="SessionListItem"]')
     except NoSuchElementException:
-        return True
+        return False
 
     shop_name = driver.find_element(By.CLASS_NAME, 'im-page-header-switch-nickname').text
     for message_element in message_elements:
@@ -258,20 +258,16 @@ def to_float(text):
 def campaign_alert():
     cursor.execute('SELECT * FROM campaign_alert')
     campaigns = cursor.fetchall()
-    if campaigns is None:
-        return True
     for campaign in campaigns:
-        serial, campaign_name, shop_name, time_left, notify = campaign
-        if notify == 'False':
-            continue
+        serial, campaign_name, shop_name, time_left, status = campaign
         time_difference = (datetime.strptime(time_left, '%Y-%m-%d %H:%M:%S') -
                            datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S'))
         hour_left = time_difference.seconds // 3600
         minute_left = (time_difference.seconds % 3600) // 60
-        if time_difference > timedelta(minutes=0):
-            send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n#{} {}'.
-                         format(shop_name, hour_left, minute_left, serial, campaign_name))
-        else:
+        if time_difference > timedelta(minutes=0) and status == 'True':
+            send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n☪{}'.
+                         format(shop_name, hour_left, minute_left, campaign_name))
+        elif time_difference <= timedelta(minutes=0):
             cursor.execute('DELETE FROM campaign_alert WHERE serial = ?', (serial,))
             conn.commit()
     cursor.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
@@ -282,84 +278,83 @@ def campaign_alert():
 def home_inspection():
     print('Home Inspection Started')
     load_page('https://sellercenter.daraz.com.bd/v2/home')
-    try:
-        wait.until(ec.element_to_be_clickable((By.CSS_SELECTOR, '.learMoreButtonStyle'))).click()
-        seller_pick_quota = driver.find_element(By.XPATH, "//div[@class='keyMetricsSeeMoreContent']/div["
-                                                          "7]/div[2]/div[2]").text
-        out_of_stock = (driver.find_element(By.XPATH, "//div[contains(text(),'Out Of Stock')]/..").
-                        find_element(By.CSS_SELECTOR, ":nth-child(2)").text)
-        review = int(driver.find_element(By.XPATH, "//div[contains(text(),'New Reviews')]/..").
-                     find_element(By.CSS_SELECTOR, "span").text)
-        if out_of_stock != '0':
-            send_message('Out of Stock ↺ *{}*'.format(database_shop_name))
-        if int(seller_pick_quota.split('/')[0]) != int(seller_pick_quota.split('/')[1]):
-            send_message('Fix Seller Pick Quota ↺ *{}*'.format(database_shop_name))
+    wait.until(ec.element_to_be_clickable((By.CSS_SELECTOR, '.learMoreButtonStyle'))).click()
+    seller_pick_quota = driver.find_element(By.XPATH, "//div[@class='keyMetricsSeeMoreContent']/div["
+                                                      "7]/div[2]/div[2]").text
+    out_of_stock = (driver.find_element(By.XPATH, "//div[contains(text(),'Out Of Stock')]/..").
+                    find_element(By.CSS_SELECTOR, ":nth-child(2)").text)
+    review = int(driver.find_element(By.XPATH, "//div[contains(text(),'New Reviews')]/..").
+                 find_element(By.CSS_SELECTOR, "span").text)
+    if out_of_stock != '0':
+        send_message('Out of Stock ↺ *{}*'.format(database_shop_name))
+    if int(seller_pick_quota.split('/')[0]) != int(seller_pick_quota.split('/')[1]):
+        send_message('Fix Seller Pick Quota ↺ *{}*'.format(database_shop_name))
 
-        # DB
-        scrap_element = {
-            'Review': review,
-            'Product Rating': to_float(home_metrics('Product Rating')),
-            '%Orders Processed Within SLA': to_float(home_metrics('%Orders Processed Within SLA')),
-        }
-        for key, value in scrap_element.items():
+    # DB
+    scrap_element = {
+        'Review': review,
+        'Product Rating': to_float(home_metrics('Product Rating')),
+        '%Orders Processed Within SLA': to_float(home_metrics('%Orders Processed Within SLA')),
+    }
+    for key, value in scrap_element.items():
+        cursor.execute(
+            'SELECT metrics_value FROM home_metrics WHERE (metrics_type, shop_name) = (?, ?)',
+            (key, database_shop_name))
+        home_metrics_db = cursor.fetchone()
+        if home_metrics_db is None:
             cursor.execute(
-                'SELECT metrics_value FROM home_metrics WHERE (metrics_type, shop_name) = (?, ?)',
-                (key, database_shop_name))
-            home_metrics_db = cursor.fetchone()
-            if home_metrics_db is None:
-                cursor.execute(
-                    'INSERT INTO home_metrics (metrics_type, metrics_value, shop_name) VALUES (?, ?, ?)',
-                    (key, value, database_shop_name))
-                conn.commit()
-                continue
-            if float(value) > float(home_metrics_db[0]):
-                send_message('{}➶ {}*~*{} ⊂⊃ *{}*'.format(key, home_metrics_db[0], value, database_shop_name))
-            elif float(value) < float(home_metrics_db[0]):
-                send_message('{}➴ {}*~*{} ⊂⊃ *{}*'.format(key, home_metrics_db[0], value, database_shop_name))
-            else:
-                continue
-            cursor.execute(
-                'UPDATE home_metrics SET metrics_value = ? WHERE (metrics_type, shop_name) = (?, ?)',
-                (value, key, database_shop_name))
+                'INSERT INTO home_metrics (metrics_type, metrics_value, shop_name) VALUES (?, ?, ?)',
+                (key, value, database_shop_name))
             conn.commit()
+            continue
+        if float(value) > float(home_metrics_db[0]):
+            send_message('{}➶ {}*~*{} ⊂⊃ *{}*'.format(key, home_metrics_db[0], value, database_shop_name))
+        elif float(value) < float(home_metrics_db[0]):
+            send_message('{}➴ {}*~*{} ⊂⊃ *{}*'.format(key, home_metrics_db[0], value, database_shop_name))
+        else:
+            continue
+        cursor.execute(
+            'UPDATE home_metrics SET metrics_value = ? WHERE (metrics_type, shop_name) = (?, ?)',
+            (value, key, database_shop_name))
+        conn.commit()
 
-        # Campaign
-        while True:
-            try:
-                driver.find_element(By.CSS_SELECTOR, '.campaignEventsContent')
-                break
-            except NoSuchElementException:
-                driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.PAGE_DOWN)
-        campaigns = driver.find_elements(By.CSS_SELECTOR,
-                                         '.campaignEventsContent .singleCampaignEventContent')
-        for campaign in campaigns:
-            time_elements = campaign.find_elements(
-                By.CSS_SELECTOR, '.singleCampaignEventBackgroundContent')
-            campaign_title = campaign.find_element(By.CSS_SELECTOR, '.singleCampaignEventTitleStyle').text
-            campaign_day = int(time_elements[0].text)
-            campaign_hour = int(time_elements[1].text)
-            if campaign_day == 0 and campaign_hour <= 12:
-                send_message('Join Campaign 彡*{}* 🪐{}Hour(s) left\n{}'.
-                             format(database_shop_name, campaign_hour, campaign_title))
-                cursor.execute(
-                    "UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
-                    (datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S') -
-                     timedelta(hours=2), database_shop_name, 'home_inspection'))
-                conn.commit()
-                return True
-            if campaign_day < 0:
-                send_message('Join Campaign 彡*{}* 🪐{}Hour(s) _late_\n{}'.
-                             format(database_shop_name, 24 - campaign_hour, campaign_title))
-                cursor.execute(
-                    "UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
-                    (datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S') -
-                     timedelta(hours=2), database_shop_name, 'home_inspection'))
-                conn.commit()
-                return True
-    except Exception as home_inspection_error:
-        print(home_inspection_error)
-        driver.refresh()
-        home_inspection()
+    # Campaign
+    while True:
+        try:
+            driver.find_element(By.CSS_SELECTOR, '.campaignEventsContent')
+            break
+        except NoSuchElementException:
+            driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.PAGE_DOWN)
+    campaigns = driver.find_elements(By.CSS_SELECTOR,
+                                     '.campaignEventsContent .singleCampaignEventContent')
+    for campaign in campaigns:
+        time_elements = campaign.find_elements(
+            By.CSS_SELECTOR, '.singleCampaignEventBackgroundContent')
+        campaign_title = campaign.find_element(By.CSS_SELECTOR, '.singleCampaignEventTitleStyle').text
+        cursor.execute('SELECT status FROM campaign_alert WHERE name = ? AND shop_name = ?',
+                       (campaign_title, database_shop_name))
+        if cursor.fetchone() == ('False',):
+            continue
+        campaign_day = int(time_elements[0].text)
+        campaign_hour = int(time_elements[1].text)
+        if campaign_day == 0 and campaign_hour <= 12:
+            send_message('Join Campaign 彡*{}* 🪐{}Hour(s) left\n☪{}'.
+                         format(database_shop_name, campaign_hour, campaign_title))
+            cursor.execute(
+                "UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
+                (datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S') -
+                 timedelta(hours=2), database_shop_name, 'home_inspection'))
+            conn.commit()
+            return True
+        if campaign_day < 0:
+            send_message('Join Campaign 彡*{}* 🪐{}Hour(s) _late_\n☪{}'.
+                         format(database_shop_name, 24 - campaign_hour, campaign_title))
+            cursor.execute(
+                "UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
+                (datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S') -
+                 timedelta(hours=2), database_shop_name, 'home_inspection'))
+            conn.commit()
+            return True
 
     cursor.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
                    (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'home_inspection'))
@@ -389,6 +384,7 @@ def message_scraping():  # inside message block
                 return None
             if 'row-card-image' in msg_block_class:
                 driver.execute_script("arguments[0].remove();", msg_block)
+                continue
             break
         elif 'row-card-text' in msg_block_class:
             message_summary += '\n' + msg_block.text
@@ -471,8 +467,8 @@ def campaign_overview():
                                 if time_left < timedelta(hours=16):
                                     hour_left = time_left.seconds // 3600
                                     minute_left = (time_left.seconds % 3600) // 60
-                                    send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n{}'.
-                                                 format(database_shop_name, hour_left, minute_left, name))
+                                    # send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n☪{}'.
+                                    #              format(database_shop_name, hour_left, minute_left, name))
                                     campaign_insertion(name, hour_left, minute_left)
                     elif type_tab.text == 'Available Campaign':
                         day_left = 99
@@ -490,8 +486,8 @@ def campaign_overview():
                                 elif time_part.endswith("m"):
                                     minute_left = int(time_part[:-1])
                             if day_left == 0 and hour_left <= 16:
-                                send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n{}'.
-                                             format(database_shop_name, hour_left, minute_left, name))
+                                # send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n☪{}'.
+                                #              format(database_shop_name, hour_left, minute_left, name))
                                 campaign_insertion(name, hour_left, minute_left)
                     elif sub_tab.text == 'Flash Sale' and type_tab.text == 'Registered Campaign':
                         print('Flash Sale')
@@ -756,6 +752,24 @@ def send_welcome(message):
     bot.send_message(message.chat.id, 'Debug Mode On')
 
 
+@bot.message_handler(commands=['pause'])
+def pause_campaign_alert(message):
+    d = sqlite3.connect('shop_data.db')
+    replied_text = message.reply_to_message.text
+    try:
+        if replied_text.split(' ')[0] == 'Join' and replied_text.split(' ')[1] == 'Campaign':
+            campaign_name = replied_text.split('☪')[1].strip()
+            shop_name = replied_text.split('彡')[1].split('🪐')[0].strip()
+            d.cursor().execute('UPDATE campaign_alert SET status = ? WHERE name = ? AND shop_name = ?',
+                               ('False', campaign_name, shop_name))
+            d.commit()
+            bot.reply_to(message, 'Campaign Alert Paused')
+            return True
+    except Exception as pause_error:
+        print(pause_error)
+        bot.reply_to(message, '_Can\'t process your reply_࿐')
+
+
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     chat_id = message.chat.id
@@ -847,77 +861,78 @@ options.add_argument("--enable-automation")
 options.add_argument("--enable-javascript")
 
 driver_array, wait_array, mouse_array = create_instance()
-if __name__ == '__main__':
-    # Start a separate thread to continuously check for messages
-    bot_thread = threading.Thread(target=bot.polling, args=(None,))
-    bot_thread.start()
-    print('Message Thread Started')
+# if __name__ == '__main__':
+# Start a separate thread to continuously check for messages
+bot_thread = threading.Thread(target=bot.polling, args=(None,))
+bot_thread.start()
+print('Message Thread Started')
 
-    while True:
-        cursor.execute('SELECT * FROM login_credential')
-        for row in cursor.fetchall():
-            order, database_shop_name, email, password, cookie, remark = row
-            driver = driver_array[order - 1]
-            wait = wait_array[order - 1]
-            mouse = mouse_array[order - 1]
-            print(f"ID: {order}\tShop Name: {database_shop_name}")
-            try:
-                load_cookies(cookie)
-                check_message_status()
-                for msg_shop in cursor.execute('SELECT DISTINCT shop_name FROM external_reply').fetchall():
-                    print('■━■━■━■ Tunneling for {}'.format(msg_shop[0]))
-                    cursor.execute('SELECT serial FROM external_reply WHERE shop_name = ?', (msg_shop[0],))
-                    msg_id = cursor.fetchall()
-                    cursor.execute('SELECT * FROM login_credential WHERE shop_name = ?', (msg_shop[0],))
-                    order, database_shop_name, email, password, cookie, remark = cursor.fetchall()[0]
-                    driver = driver_array[order - 1]
-                    wait = wait_array[order - 1]
-                    mouse = mouse_array[order - 1]
-                    load_cookies(cookie)
-                    check_message_status()
-                    for msg_serial in msg_id:
-                        cursor.execute('SELECT * FROM external_reply WHERE serial = ?', (msg_serial[0],))
-                        msg_info = cursor.fetchone()
-                        if msg_info is None:
-                            continue
-                        bot.send_message(msg_info[4], '✘Reply Dropped 彡{} ➤{}\n╰┈➤{}'.
-                                         format(msg_info[3], msg_info[1], msg_info[2]),
-                                         reply_to_message_id=msg_info[5])
-                        cursor.execute('DELETE FROM external_reply WHERE serial = ?', (msg_serial[0],))
-                        conn.commit()
-                    print('■━■━■━■ Tunneling Completed')
-                driver.switch_to.window(driver.window_handles[1])
-                process_list = (('question', 60),
-                                ('home_inspection', 0),
-                                ('order_limit', 0),
-                                ('stock_check', 1440),
-                                ('campaign_alert', 0))
-                for process in process_list:
-                    if extra_process and not process_time(process[0], process[1]):
-                        try:
-                            globals()[process[0]]()
-                        except Exception as process_error:
-                            print(process_error)
-                            wait_for_connection()
-                            continue
-                            driver.save_screenshot('Error Screenshot/' + database_shop_name + '.png')
-                        extra_process = False
-                if extra_process and not process_time('campaign_overview') and between_time():
-                    campaign_overview()
+while True:
+    cursor.execute('SELECT * FROM login_credential')
+    for row in cursor.fetchall():
+        order, database_shop_name, email, password, cookie, remark = row
+        driver = driver_array[order - 1]
+        wait = wait_array[order - 1]
+        mouse = mouse_array[order - 1]
+        print(f"ID: {order}\tShop Name: {database_shop_name}")
+        try:
+            load_cookies(cookie)
+            check_message_status()
+            driver.switch_to.window(driver.window_handles[1])
+            process_list = (('question', 60),
+                            ('home_inspection', 0),
+                            ('order_limit', 0),
+                            ('stock_check', 1440),
+                            ('campaign_alert', 0))
+            for process in process_list:
+                if extra_process and not process_time(process[0], process[1]):
+                    try:
+                        globals()[process[0]]()
+                    except Exception as process_error:
+                        print(process_error)
+                        wait_for_connection()
+                        continue
+                        driver.save_screenshot('Error Screenshot/' + database_shop_name + '.png')
                     extra_process = False
-            except Exception as error:
-                print(error)
-                driver.save_screenshot('Error Screenshot/' + database_shop_name +
-                                       time.strftime(" %Y%m%d-%H%M%S") + '.png')
-                close_instance(driver_array)
-                driver_array, wait_array, mouse_array = create_instance()
-            conn.commit()
-            if not bot_thread.is_alive():
-                bot_thread = threading.Thread(target=bot.polling, args=(None,))
-                bot_thread.start()
-                print('Message Thread Restarted')
-        print('Cycle Completed')
-        cursor.execute('DELETE FROM send_time WHERE send_time < ?',
-                       (datetime.now() - timedelta(minutes=30),))
+            if extra_process and not process_time('campaign_overview') and between_time():
+                campaign_overview()
+                extra_process = False
+            for msg_shop in cursor.execute('SELECT DISTINCT shop_name FROM external_reply').fetchall():
+                print('■━■━■━■ Tunneling for {}'.format(msg_shop[0]))
+                cursor.execute('SELECT serial FROM external_reply WHERE shop_name = ?', (msg_shop[0],))
+                msg_id = cursor.fetchall()
+                cursor.execute('SELECT * FROM login_credential WHERE shop_name = ?', (msg_shop[0],))
+                order, database_shop_name, email, password, cookie, remark = cursor.fetchall()[0]
+                driver = driver_array[order - 1]
+                wait = wait_array[order - 1]
+                mouse = mouse_array[order - 1]
+                load_cookies(cookie)
+                if not check_message_status():
+                    continue
+                for msg_serial in msg_id:
+                    cursor.execute('SELECT * FROM external_reply WHERE serial = ?', (msg_serial[0],))
+                    msg_info = cursor.fetchone()
+                    if msg_info is None:
+                        continue
+                    bot.send_message('1783177827', '*☠Reply Dropped* 彡{} ➤{} ➥{}'.
+                                     format(msg_info[3], msg_info[1], msg_info[2]),
+                                     reply_to_message_id=msg_info[5])
+                    cursor.execute('DELETE FROM external_reply WHERE serial = ?', (msg_serial[0],))
+                    conn.commit()
+                print('■━■━■━■ Tunneling Completed')
+        except Exception as error:
+            print(error)
+            driver.save_screenshot('Error Screenshot/' + database_shop_name +
+                                   time.strftime(" %Y%m%d-%H%M%S") + '.png')
+            close_instance(driver_array)
+            driver_array, wait_array, mouse_array = create_instance()
         conn.commit()
-        extra_process = True
+        if not bot_thread.is_alive():
+            bot_thread = threading.Thread(target=bot.polling, args=(None,))
+            bot_thread.start()
+            print('Message Thread Restarted')
+    print('{}'.format(' Cycle Completed '.center(40, '━')))
+    cursor.execute('DELETE FROM send_time WHERE send_time < ?',
+                   (datetime.now() - timedelta(minutes=30),))
+    conn.commit()
+    extra_process = True
