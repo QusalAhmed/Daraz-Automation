@@ -10,8 +10,8 @@ import requests
 import telebot
 from datetime import datetime, timedelta
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import (NoSuchElementException, StaleElementReferenceException,
+                                        TimeoutException)
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as ec
@@ -19,7 +19,7 @@ from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.common.keys import Keys
 
 # Configure logging settings
-logging.basicConfig(level=logging.CRITICAL, filename='bot.log', filemode='w',
+logging.basicConfig(level=logging.INFO, filename='bot.log', filemode='w',
                     format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 # setting database
@@ -400,8 +400,12 @@ def message_scraping():  # inside message block
         elif 'row-card-image' in msg_block_class:
             mouse.move_to_element(
                 msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1]).perform()
-            message_summary += ('\nImage: ' + msg_block.
-                                find_element(By.CSS_SELECTOR, 'img').get_attribute('src'))
+            try:
+                message_summary += ('\nImage: ' + msg_block.
+                                    find_element(By.CSS_SELECTOR, 'img').get_attribute('src'))
+            except Exception as image_error:
+                print(image_error)
+                message_summary += '\nImage: ' + msg_block.text
         else:
             message_summary += '\n' + msg_block.text
 
@@ -429,7 +433,30 @@ def campaign_insertion(campaign_name, hour_left, min_left):
         conn.commit()
 
 
+def campaign_overview_monitor():
+    global extra_process
+    global triumph
+    if inspect.currentframe().f_back.f_code.co_name != inspect.currentframe().f_code.co_name:
+        triumph = 0
+    try:
+        campaign_overview()
+    except StaleElementReferenceException:
+        driver.save_screenshot('Error Screenshot/' + 'Campaign-' + database_shop_name + '.png')
+        wait_for_connection()
+        if triumph <= 1:
+            campaign_overview_monitor()
+            triumph += 1
+        else:
+            print('Campaign Overview Maximum Times Failed')
+            return False
+        return True
+    finally:
+        extra_process = False
+
+
 def campaign_overview():
+    if 'https://sellercenter.daraz.com.bd/v2/campaign/portal' not in driver.current_url:
+        load_page('https://sellercenter.daraz.com.bd/v2/campaign/portal', '.next-tabs-nav-scroll')
     load_page('https://sellercenter.daraz.com.bd/v2/campaign/portal', '.next-tabs-nav-scroll')
     print('Campaign Overview Started')
     for main_tab in driver.find_elements(
@@ -446,82 +473,73 @@ def campaign_overview():
             time.sleep(1)
             for type_tab in driver.find_elements(
                     By.CSS_SELECTOR, '#centerContent > :nth-child(1) > :nth-child(1) > :nth-child(5) li'):
-                try:
-                    wait.until(ec.element_to_be_clickable(type_tab))
-                    type_tab.click()
-                    time.sleep(2)
-                    campaign_element = wait.until(ec.
-                                                  presence_of_element_located((By.CSS_SELECTOR, 'tbody tr')))
-                    if campaign_element.text == 'No Data' or campaign_element.text == '':
-                        continue
-                    if type_tab.text == 'Special Invitation':
-                        for campaign in wait.until(
-                                ec.presence_of_all_elements_located((By.CSS_SELECTOR, 'tbody tr'))):
-                            status = campaign.find_element(By.CSS_SELECTOR, 'td[name="status"]').text
-                            if status == 'Pending':
-                                name = campaign.find_element(By.CSS_SELECTOR, 'td[name="name"]').text
-                                end_date = (campaign.find_element(
-                                    By.CSS_SELECTOR, "td[name='registerEndTime']").text
-                                            .split('GMT')[0].strip())
-                                time_left = datetime.strptime(end_date, '%d %b %Y %H:%M') - datetime.now()
-                                if time_left < timedelta(hours=16):
-                                    hour_left = time_left.seconds // 3600
-                                    minute_left = (time_left.seconds % 3600) // 60
-                                    # send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n☪{}'.
-                                    #              format(database_shop_name, hour_left, minute_left, name))
-                                    campaign_insertion(name, hour_left, minute_left)
-                    elif type_tab.text == 'Available Campaign':
-                        day_left = 99
-                        hour_left = 0
-                        minute_left = 0
-                        for campaign in wait.until(
-                                ec.presence_of_all_elements_located((By.CSS_SELECTOR, 'tbody tr'))):
+                wait.until(ec.element_to_be_clickable(type_tab))
+                type_tab.click()
+                time.sleep(1)
+                campaign_element = wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, 'tbody tr')))
+                if campaign_element.text == 'No Data' or campaign_element.text == '':
+                    continue
+                if type_tab.text == 'Special Invitation':
+                    for campaign in wait.until(
+                            ec.presence_of_all_elements_located((By.CSS_SELECTOR, 'tbody tr'))):
+                        status = campaign.find_element(By.CSS_SELECTOR, 'td[name="status"]').text
+                        if status == 'Pending':
                             name = campaign.find_element(By.CSS_SELECTOR, 'td[name="name"]').text
-                            end_time = campaign.find_element(By.CSS_SELECTOR, ".count-down").text
-                            for time_part in end_time.split(':'):
-                                if time_part.endswith("d"):
-                                    day_left = int(time_part[:-1])
-                                elif time_part.endswith("h"):
-                                    hour_left = int(time_part[:-1])
-                                elif time_part.endswith("m"):
-                                    minute_left = int(time_part[:-1])
-                            if day_left == 0 and hour_left <= 16:
+                            end_date = (campaign.find_element(
+                                By.CSS_SELECTOR, "td[name='registerEndTime']").text
+                                        .split('GMT')[0].strip())
+                            time_left = datetime.strptime(end_date, '%d %b %Y %H:%M') - datetime.now()
+                            if time_left < timedelta(hours=16):
+                                hour_left = time_left.seconds // 3600
+                                minute_left = (time_left.seconds % 3600) // 60
                                 # send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n☪{}'.
                                 #              format(database_shop_name, hour_left, minute_left, name))
                                 campaign_insertion(name, hour_left, minute_left)
-                    elif sub_tab.text == 'Flash Sale' and type_tab.text == 'Registered Campaign':
-                        print('Flash Sale')
-                        campaign = wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, 'tbody tr')))
-                        status = campaign.find_element(By.CSS_SELECTOR, 'td[name="status"]').text
-                        if status == 'Offline':
-                            break
-                        (mouse.key_down(Keys.CONTROL).click(
-                            campaign.find_element(By.CSS_SELECTOR, 'button')).key_up(Keys.CONTROL).perform())
-                        driver.switch_to.window(driver.window_handles[2])
-                        try:
-                            wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, '.next-tabs-bar')))
-                            approved_text = wait.until(ec.presence_of_element_located(
-                                (By.XPATH, "//div[contains(text(),'Approved')]"))).text
-                            approved_product = int(approved_text.split('(')[1].split(')')[0])
-                            pending_text = wait.until(ec.presence_of_element_located(
-                                (By.XPATH, "//div[contains(text(),'Pending Allocation')]"))).text
-                            pending_product = int(pending_text.split('(')[1].split(')')[0])
-                            if approved_product > 0:
-                                send_message('Flash Sale Approved ↺ *{}*'.format(database_shop_name))
-                            elif pending_product > 0:
-                                send_message('Flash Sale Pending ↺ *{}*'.format(database_shop_name))
-                        except Exception as flash_sale_error:
-                            print(flash_sale_error)
-                            return False
-                        driver.close()
-                        driver.switch_to.window(driver.window_handles[1])
-                        print('Flash Sale Completed')
+                elif type_tab.text == 'Available Campaign':
+                    day_left = 99
+                    hour_left = 0
+                    minute_left = 0
+                    for campaign in wait.until(
+                            ec.presence_of_all_elements_located((By.CSS_SELECTOR, 'tbody tr'))):
+                        name = campaign.find_element(By.CSS_SELECTOR, 'td[name="name"]').text
+                        end_time = campaign.find_element(By.CSS_SELECTOR, ".count-down").text
+                        for time_part in end_time.split(':'):
+                            if time_part.endswith("d"):
+                                day_left = int(time_part[:-1])
+                            elif time_part.endswith("h"):
+                                hour_left = int(time_part[:-1])
+                            elif time_part.endswith("m"):
+                                minute_left = int(time_part[:-1])
+                        if day_left == 0 and hour_left <= 16:
+                            # send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n☪{}'.
+                            #              format(database_shop_name, hour_left, minute_left, name))
+                            campaign_insertion(name, hour_left, minute_left)
+                elif sub_tab.text == 'Flash Sale' and type_tab.text == 'Registered Campaign':
+                    print('Flash Sale')
+                    campaign = wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, 'tbody tr')))
+                    status = campaign.find_element(By.CSS_SELECTOR, 'td[name="status"]').text
+                    if status == 'Offline':
                         break
-                    else:
-                        break
-                except Exception as campaign_overview_error:
-                    print(campaign_overview_error)
-                    return False
+                    (mouse.key_down(Keys.CONTROL).click(
+                        campaign.find_element(By.CSS_SELECTOR, 'button')).key_up(Keys.CONTROL).perform())
+                    driver.switch_to.window(driver.window_handles[2])
+                    wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, '.next-tabs-bar')))
+                    approved_text = wait.until(ec.presence_of_element_located(
+                        (By.XPATH, "//div[contains(text(),'Approved')]"))).text
+                    approved_product = int(approved_text.split('(')[1].split(')')[0])
+                    pending_text = wait.until(ec.presence_of_element_located(
+                        (By.XPATH, "//div[contains(text(),'Pending Allocation')]"))).text
+                    pending_product = int(pending_text.split('(')[1].split(')')[0])
+                    if approved_product > 0:
+                        send_message('Flash Sale Approved ↺ *{}*'.format(database_shop_name))
+                    elif pending_product > 0:
+                        send_message('Flash Sale Pending ↺ *{}*'.format(database_shop_name))
+                    driver.close()
+                    driver.switch_to.window(driver.window_handles[1])
+                    print('Flash Sale Completed')
+                    break
+                else:
+                    break
     print('Campaign Overview Completed')
     cursor.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
                    (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'campaign_overview'))
@@ -631,6 +649,8 @@ def load_page(page_url, element='body'):
             wait_for_connection()
             if 'chat/window' not in driver.current_url:
                 return True
+        elif triumph > 10:
+            raise Exception('Page loading failed {} times'.format(triumph))
         load_page(page_url, element)
 
 
@@ -861,7 +881,6 @@ options.add_argument("--enable-automation")
 options.add_argument("--enable-javascript")
 
 driver_array, wait_array, mouse_array = create_instance()
-# if __name__ == '__main__':
 # Start a separate thread to continuously check for messages
 bot_thread = threading.Thread(target=bot.polling, args=(None,))
 bot_thread.start()
@@ -890,13 +909,12 @@ while True:
                         globals()[process[0]]()
                     except Exception as process_error:
                         print(process_error)
+                        driver.save_screenshot('Error Screenshot/' + database_shop_name + '.png')
                         wait_for_connection()
                         continue
-                        driver.save_screenshot('Error Screenshot/' + database_shop_name + '.png')
                     extra_process = False
             if extra_process and not process_time('campaign_overview') and between_time():
-                campaign_overview()
-                extra_process = False
+                campaign_overview_monitor()
             for msg_shop in cursor.execute('SELECT DISTINCT shop_name FROM external_reply').fetchall():
                 print('■━■━■━■ Tunneling for {}'.format(msg_shop[0]))
                 cursor.execute('SELECT serial FROM external_reply WHERE shop_name = ?', (msg_shop[0],))
