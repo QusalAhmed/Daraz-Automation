@@ -171,7 +171,7 @@ def check_message_status():
             return True
     print('Checking message status')
     cursor.execute('SELECT value FROM essentials WHERE name = ?', ('debug',))
-    if cursor.fetchone()[0] == 'True':
+    if cursor.fetchone()[0] == '1':
         driver.save_screenshot('Debug/' + database_shop_name + '.png')
     try:
         wait.until(ec.presence_of_element_located((By.XPATH, "//span[contains(text(),'Unreplied')]")))
@@ -236,16 +236,15 @@ def check_message_status():
                         datetime.strptime(last_send_time[0], '%Y-%m-%d %H:%M:%S'))
                 if time_difference > timedelta(minutes=30):
                     send_image(shop_name, sender_name, msg_time, msg_telegram)
-                    cursor.execute(
-                        'UPDATE send_time SET send_time = ? WHERE '
-                        '(customer_name, query, shop_name) = (?, ?, ?)',
-                        (time.strftime("%Y-%m-%d %H:%M:%S"), sender_name, customer_msg, shop_name))
+                    cursor.execute('UPDATE send_time SET send_time = ? WHERE (customer_name, query, shop_name) = '
+                                   '(?, ?, ?)',
+                                   (time.strftime("%Y-%m-%d %H:%M:%S"), sender_name, customer_msg, shop_name))
             else:
                 cursor.execute(
                     'INSERT INTO send_time (customer_name, query, shop_name, send_time) VALUES (?, ?, ?, ?)',
                     (sender_name, customer_msg, shop_name, time.strftime("%Y-%m-%d %H:%M:%S")))
                 send_image(shop_name, sender_name, msg_time, msg_telegram)
-        conn.commit()
+            conn.commit()
     cursor.execute('UPDATE login_credential SET remark = ? WHERE id = ?',
                    (time.strftime("%Y-%m-%d %H:%M:%S"), order))
     conn.commit()
@@ -812,24 +811,29 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['debug'])
 def send_welcome(message):
-    d = sqlite3.connect('shop_data.db')
-    d.cursor().execute('UPDATE essentials SET value = ? WHERE name = ?', ('True', 'debug'))
-    d.commit()
-    bot.send_message(message.chat.id, 'Debug Mode On')
+    # d = sqlite3.connect('shop_data.db')
+    # d.cursor().execute('UPDATE essentials SET value = ? WHERE name = ?', ('True', 'debug'))
+    # d.commit()
+    # bot.send_message(message.chat.id, 'Debug Mode On')
+
+    cursor.execute('SELECT value from essentials WHERE name = ?', ('debug',))
+    debug_status = bool(int(cursor.fetchone()[0]))
+    cursor.execute('UPDATE essentials SET value = ? WHERE name = ?', (not debug_status, 'debug'))
+    conn.commit()
+    bot.send_message(message.chat.id, '_Debug Mode {}_'.format('On' if not debug_status else 'Off'))
 
 
 @bot.message_handler(commands=['pause'])
 def pause_campaign_alert(message):
-    d = sqlite3.connect('shop_data.db')
     replied_text = message.reply_to_message.text
     try:
         if replied_text.split(' ')[0] == 'Join' and replied_text.split(' ')[1] == 'Campaign':
             campaign_name = replied_text.split('☪')[1].strip()
             shop_name = replied_text.split('彡')[1].split('🪐')[0].strip()
-            d.cursor().execute('UPDATE campaign_alert SET status = ? WHERE name = ? AND shop_name = ?',
-                               ('False', campaign_name, shop_name))
-            d.commit()
-            bot.reply_to(message, 'Campaign Alert Paused')
+            cursor.execute('UPDATE campaign_alert SET status = ? WHERE name = ? AND shop_name = ?',
+                           ('False', campaign_name, shop_name))
+            conn.commit()
+            bot.reply_to(message, '_Campaign Alert Paused_\n📌{}'.format(campaign_name))
             return True
     except Exception as pause_error:
         print(pause_error)
@@ -896,14 +900,14 @@ def echo_message(chat_id, message_text):
 
 # Handling external reply ended
 
-service = Service(executable_path='driver/chromedriver.exe')
-# service = Service(executable_path='/usr/bin/chromedriver')
+# service = Service(executable_path='driver/chromedriver.exe')
+service = Service(executable_path='/usr/bin/chromedriver')
 options = webdriver.ChromeOptions()
 options.page_load_strategy = 'eager'
 options.add_argument('--start-maximized')
 options.add_argument('--headless')
 options.add_argument('--disable-gpu')
-# options.add_argument('--no-sandbox')
+options.add_argument('--no-sandbox')
 options.add_argument('--disable-dev-shm-usage')
 options.add_argument('--ignore-certificate-errors')
 options.add_argument('--ignore-ssl-errors')
