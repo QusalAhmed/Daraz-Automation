@@ -40,8 +40,9 @@ bot_token = essential_cursor.execute(
 bot = telebot.TeleBot(bot_token, parse_mode='Markdown')
 
 
-def instance_data(shop_data, ins_driver, ins_wait, ins_mouse):
-    ins_order, ins_shop_name, ins_email, ins_password, ins_cookie, ins_remark = shop_data
+def instance_data(shop_name, ins_driver, ins_wait, ins_mouse):
+    cursor.execute('SELECT * FROM login_credential WHERE shop_name = ?', (shop_name,))
+    ins_order, ins_shop_name, ins_email, ins_password, ins_cookie, ins_remark = cursor.fetchone()
     ins_driver = ins_driver[ins_order - 1]
     ins_wait = ins_wait[ins_order - 1]
     ins_mouse = ins_mouse[ins_order - 1]
@@ -235,14 +236,15 @@ def check_message_status():
                         datetime.strptime(last_send_time[0], '%Y-%m-%d %H:%M:%S'))
                 if time_difference > timedelta(minutes=30):
                     send_image(shop_name, sender_name, msg_time, msg_telegram)
-        if last_send_time is None:
-            cursor.execute(
-                'INSERT INTO send_time (customer_name, query, shop_name, send_time) VALUES (?, ?, ?, ?)',
-                (sender_name, customer_msg, shop_name, time.strftime("%Y-%m-%d %H:%M:%S")))
-        else:
-            cursor.execute(
-                'UPDATE send_time SET send_time = ? WHERE (customer_name, query, shop_name) = (?, ?, ?)',
-                (time.strftime("%Y-%m-%d %H:%M:%S"), sender_name, customer_msg, shop_name))
+                    cursor.execute(
+                        'UPDATE send_time SET send_time = ? WHERE '
+                        '(customer_name, query, shop_name) = (?, ?, ?)',
+                        (time.strftime("%Y-%m-%d %H:%M:%S"), sender_name, customer_msg, shop_name))
+            else:
+                cursor.execute(
+                    'INSERT INTO send_time (customer_name, query, shop_name, send_time) VALUES (?, ?, ?, ?)',
+                    (sender_name, customer_msg, shop_name, time.strftime("%Y-%m-%d %H:%M:%S")))
+                send_image(shop_name, sender_name, msg_time, msg_telegram)
         conn.commit()
     cursor.execute('UPDATE login_credential SET remark = ? WHERE id = ?',
                    (time.strftime("%Y-%m-%d %H:%M:%S"), order))
@@ -894,14 +896,14 @@ def echo_message(chat_id, message_text):
 
 # Handling external reply ended
 
-# service = Service(executable_path='driver/chromedriver.exe')
-service = Service(executable_path='/usr/bin/chromedriver')
+service = Service(executable_path='driver/chromedriver.exe')
+# service = Service(executable_path='/usr/bin/chromedriver')
 options = webdriver.ChromeOptions()
 options.page_load_strategy = 'eager'
 options.add_argument('--start-maximized')
 options.add_argument('--headless')
 options.add_argument('--disable-gpu')
-options.add_argument('--no-sandbox')
+# options.add_argument('--no-sandbox')
 options.add_argument('--disable-dev-shm-usage')
 options.add_argument('--ignore-certificate-errors')
 options.add_argument('--ignore-ssl-errors')
@@ -935,8 +937,10 @@ print('Message Thread Started')
 while True:
     cursor.execute('SELECT * FROM login_credential')
     for row in cursor.fetchall():
-        order, database_shop_name, email, password, cookie, remark, driver, wait, mouse = instance_data(
-            row, driver_array, wait_array, mouse_array)
+        order, database_shop_name, email, password, cookie, remark = row
+        driver = driver_array[order - 1]
+        wait = wait_array[order - 1]
+        mouse = mouse_array[order - 1]
         print(f"ID: {order}\tShop Name: {database_shop_name}")
         try:
             load_cookies(cookie)
@@ -964,7 +968,7 @@ while True:
                 cursor.execute('SELECT serial FROM external_reply WHERE shop_name = ?', (msg_shop[0],))
                 msg_id = cursor.fetchall()
                 order, database_shop_name, email, password, cookie, remark, driver, wait, mouse = (
-                    instance_data(row, driver_array, wait_array, mouse_array))
+                    instance_data(msg_shop[0], driver_array, wait_array, mouse_array))
                 load_cookies(cookie)
                 if not check_message_status():
                     continue
@@ -983,7 +987,7 @@ while True:
             for fix_msg_shop in cursor.execute('SELECT DISTINCT shop_name FROM reply_fix').fetchall():
                 print('■━■━■━■ Fix Tunneling for {}'.format(fix_msg_shop[0]))
                 order, database_shop_name, email, password, cookie, remark, driver, wait, mouse = (
-                    instance_data(row, driver_array, wait_array, mouse_array))
+                    instance_data(fix_msg_shop[0], driver_array, wait_array, mouse_array))
                 load_cookies(cookie)
                 fix_reply()
                 print('■━■━■━■ Fix Tunneling Completed')
