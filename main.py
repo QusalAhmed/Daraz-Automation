@@ -25,9 +25,9 @@ logging.basicConfig(level=logging.INFO, filename='bot.log', filemode='w',
 # setting database
 conn = sqlite3.connect('shop_data.db', check_same_thread=False)
 cursor = conn.cursor()
-cursor.execute("UPDATE process_time SET execution_time = ? WHERE name = ?",
-               ('2022-10-07 21:31:06', 'check_message_status'))
-conn.commit()
+# cursor.execute("UPDATE process_time SET execution_time = ? WHERE name = ?",
+#                ('2022-10-07 21:31:06', 'check_message_status'))
+# conn.commit()
 
 # Global variable
 extra_process = True
@@ -104,9 +104,9 @@ def login():
 
 def send_message(message_text, notify=False):
     chat_id = '1783177827'  # -1001969295732
-    chat_id_group = '-1001982474657'
+    # chat_id_group = '-1001982474657'
     bot.send_message(chat_id, message_text, disable_notification=notify)
-    bot.send_message(chat_id_group, message_text, disable_notification=notify)
+    # bot.send_message(chat_id_group, message_text, disable_notification=notify)
 
 
 def load_cookies(cookie_file):
@@ -127,7 +127,7 @@ def load_cookies(cookie_file):
 
 def simplified_text(input_string):
     # Define a regular expression pattern to match special characters and spaces
-    pattern = r'[^\w\s\u0980-\u09FF[\]]+'
+    pattern = r'[^\w\s\➛\u0980-\u09FF[\]]+'
 
     # Use re.sub to remove special characters while preserving Bangla text
     cleaned_string = re.sub(pattern, '', input_string).strip()
@@ -147,6 +147,12 @@ def send_image(shop_name, sender_name, msg_time, msg_telegram):
     except Exception as msg_sending_error:
         print(msg_sending_error)
     os.remove('Message Screenshot/' + image_name + '.png')
+
+
+def recheck(customer_msg, shop_name, sender_name, msg_time, auto_reply):
+    msg_telegram_re = simplified_text(message_scraping(auto_reply[0]))
+    if customer_msg != msg_telegram_re:
+        send_image(shop_name, sender_name, msg_time, msg_telegram_re)
 
 
 def check_message_status():
@@ -216,9 +222,7 @@ def check_message_status():
             input_message(auto_reply)
             send_message('{} ♯{} ➤{}\n➥ {}'.format(
                 shop_name, msg_time, msg_telegram, auto_reply[0][0], to_md(sender_name)), True)
-            msg_telegram_re = simplified_text(message_scraping(auto_reply[0]))
-            if customer_msg != msg_telegram_re:
-                send_image(shop_name, sender_name, msg_time, msg_telegram_re)
+            recheck(customer_msg, shop_name, sender_name, msg_time, auto_reply)
         elif external_reply:
             input_message(external_reply)
             for single_reply in external_reply:
@@ -229,6 +233,7 @@ def check_message_status():
             cursor.execute('DELETE FROM send_time WHERE (customer_name, query, shop_name) = (?, ?, ?)',
                            (sender_name, customer_msg, shop_name))
             conn.commit()
+            recheck(customer_msg, shop_name, sender_name, msg_time, external_reply)
         else:
             if last_send_time is not None:
                 time_difference = (
@@ -245,10 +250,12 @@ def check_message_status():
                     (sender_name, customer_msg, shop_name, time.strftime("%Y-%m-%d %H:%M:%S")))
                 send_image(shop_name, sender_name, msg_time, msg_telegram)
             conn.commit()
+    driver.refresh()
     cursor.execute('UPDATE login_credential SET remark = ? WHERE id = ?',
                    (time.strftime("%Y-%m-%d %H:%M:%S"), order))
     conn.commit()
     print('Message status checked')
+    return True
 
 
 def fix_reply():
@@ -261,7 +268,7 @@ def fix_reply():
             driver.find_element(By.XPATH, "//span[contains(text(),'Unreplied')]").click()
             time.sleep(1)
         driver.find_element(
-            By.XPATH, '//div[@class="chat-spin-container"] //div[contains(text(),"Qusal Ahmed")]').click()
+            By.XPATH, '//div[@class="chat-spin-container"] //div[contains(text(),customer_name)]').click()
         set_message_interface()
         msg_window = wait.until(
             ec.presence_of_element_located((By.CSS_SELECTOR, '[class^="scrollbar-styled MessageList"]')))
@@ -274,7 +281,7 @@ def fix_reply():
             cursor.execute('DELETE FROM reply_fix WHERE serial = ?', (serial,))
             conn.commit()
         else:
-            send_message('*☠Drop* Fix Reply 彡{} 🕊{}✸'.format(shop_name, to_md(reply), True))
+            send_message('*☠Drop Fix Reply* 彡{} 🕊{}✸'.format(shop_name, to_md(reply), True))
             cursor.execute('DELETE FROM reply_fix WHERE serial = ?', (serial,))
             conn.commit()
 
@@ -408,28 +415,31 @@ def set_message_interface():
                        ('2022-10-07 21:31:06', 'check_message_status'))
         conn.commit()
         check_message_status()
-        return True
+        return 'Repeat'
 
 
 def message_scraping(ignore=()):  # inside message block
     message_brief = ''
     message_summary = ''
-    set_message_interface()
+    if set_message_interface() == 'Repeat':
+        return None
     msg_window = wait.until(
         ec.presence_of_element_located((By.CSS_SELECTOR, '[class^="scrollbar-styled MessageList"]')))
     mouse.move_to_element(msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1]).perform()
+    mouse.send_keys_to_element(msg_window, Keys.PAGE_DOWN).perform()
     for msg_block in msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[::-1]:
         msg_block_class = msg_block.get_attribute('class')
         if 'user-type-2' in msg_block_class:
-            message_text = msg_block.find_element(By.CSS_SELECTOR, '.message-text-box').text
-            if message_text in ignore:
-                ignore = tuple(x for x in ignore if x != message_text)
-                continue
-            if message_summary == '':
-                return None
             if 'row-card-image' in msg_block_class:
                 driver.execute_script("arguments[0].remove();", msg_block)
                 continue
+            elif 'row-card-text' in msg_block_class:
+                message_text = msg_block.find_element(By.CSS_SELECTOR, '.message-text-box').text
+                if message_text in ignore:
+                    ignore = tuple(x for x in ignore if x != message_text)
+                    continue
+            if message_summary == '':
+                return None
             break
         elif 'row-card-text' in msg_block_class:
             message_summary += '\n' + msg_block.text
@@ -443,8 +453,7 @@ def message_scraping(ignore=()):  # inside message block
             product_details = msg_block.find_element(By.CSS_SELECTOR, '.lzd-pro-desc').text
             message_summary += '\nProduct: ' + product_details
         elif 'row-card-image' in msg_block_class:
-            mouse.move_to_element(
-                msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1]).perform()
+            mouse.send_keys_to_element(msg_window, Keys.PAGE_DOWN).perform()
             try:
                 message_summary += ('\nImage: ' + msg_block.
                                     find_element(By.CSS_SELECTOR, 'img').get_attribute('src'))
@@ -676,6 +685,14 @@ def move_click(move_element, click_element):
     driver.find_element(click_element).click()
 
 
+def redirection_login(page_url, element):
+    if 'seller/login' in driver.current_url and 'seller/login' not in page_url:
+        driver.switch_to.window(driver.window_handles[1])
+        login()
+        load_page(page_url, element)
+        return True
+
+
 def load_page(page_url, element='body'):
     global triumph
     if inspect.currentframe().f_back.f_code.co_name != 'load_page':
@@ -683,8 +700,10 @@ def load_page(page_url, element='body'):
     try:
         driver.get(page_url)
         wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, element)))
+        # redirection_login(page_url, element)
     except TimeoutException:
         print('Page loading failed: {}'.format(page_url))
+        # redirection_login(page_url, element)
         triumph += 1
         if triumph >= 5:
             print('Page loading failed {} times'.format(triumph))
@@ -694,10 +713,6 @@ def load_page(page_url, element='body'):
         elif triumph > 10:
             raise Exception('Page loading failed {} times'.format(triumph))
         load_page(page_url, element)
-    # finally:
-    #     if 'v2/seller/login' in driver.current_url:
-    #         login()
-    #         load_page(page_url, element)
 
 
 def question():
@@ -811,11 +826,6 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['debug'])
 def send_welcome(message):
-    # d = sqlite3.connect('shop_data.db')
-    # d.cursor().execute('UPDATE essentials SET value = ? WHERE name = ?', ('True', 'debug'))
-    # d.commit()
-    # bot.send_message(message.chat.id, 'Debug Mode On')
-
     cursor.execute('SELECT value from essentials WHERE name = ?', ('debug',))
     debug_status = bool(int(cursor.fetchone()[0]))
     cursor.execute('UPDATE essentials SET value = ? WHERE name = ?', (not debug_status, 'debug'))
@@ -983,7 +993,7 @@ while True:
                         continue
                     cursor.execute('DELETE FROM external_reply WHERE serial = ?', (msg_serial[0],))
                     conn.commit()
-                    bot.send_message('1783177827', '*☠Reply Dropped* 彡{} ➤{} ➥{}'.
+                    bot.send_message('1783177827', '*☠Reply Dropped* 彡{} 🕊{} ➥{}'.
                                      format(msg_info[3], msg_info[1], to_md(msg_info[2])),
                                      reply_to_message_id=msg_info[5])
                 print('■━■━■━■ Tunneling Completed')
