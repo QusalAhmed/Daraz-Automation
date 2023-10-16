@@ -99,9 +99,6 @@ def login():
     cursor.execute('UPDATE login_credential SET cookie = ? WHERE id = ?', (new_cookie, order))
     conn.commit()
     print('Login Successful')
-    cursor.execute('UPDATE login_credential SET login_at = ? WHERE id = ?',
-                   (time.strftime("%Y-%m-%d %H:%M:%S"), order))
-    conn.commit()
     load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
 
 
@@ -279,7 +276,7 @@ def fix_reply():
         if ('user-type-2' in msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1].
                 get_attribute('class')):
             input_message(((reply,),))
-            send_message('*Fix Reply* 彡{} 🕊{}✸'.format(shop_name, to_md(reply), True))
+            send_message('*Fix Reply* 彡{} 🕊{}✸'.format(shop_name, to_md(reply)))
             cursor.execute('DELETE FROM reply_fix WHERE serial = ?', (serial,))
             conn.commit()
         else:
@@ -429,6 +426,7 @@ def message_scraping(ignore=()):  # inside message block
         ec.presence_of_element_located((By.CSS_SELECTOR, '[class^="scrollbar-styled MessageList"]')))
     # mouse.move_to_element(msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1]).perform()
     mouse.send_keys_to_element(driver.find_element(By.CSS_SELECTOR, '.message-panel'), Keys.END).perform()
+    time.sleep(1)
     try:
         driver.find_element(By.CSS_SELECTOR, '.ant-image-preview-close').click()
     except NoSuchElementException:
@@ -735,7 +733,7 @@ def question():
         # Get the number of question
         question_count = int(question_element.split('(')[1].split(')')[0])
         if question_count > 0:
-            send_message('*{}* has *{}* question(s)'.format(database_shop_name, question_count))
+            send_message('*{}* has {}* ↷ question(s)'.format(database_shop_name, question_count))
     except Exception as question_error:
         print(question_error)
         return True
@@ -823,7 +821,7 @@ def wait_for_connection():
 
 
 # Function to handle incoming messages
-@bot.message_handler(commands=['start', 'help'])
+@bot.message_handler(commands=['start', 'info'])
 def send_welcome(message):
     stat_db = sqlite3.connect('shop_data.db')
     stat_cursor = stat_db.cursor()
@@ -921,14 +919,14 @@ def echo_message(chat_id, message_text):
 
 # Handling external reply ended
 
-service = Service(executable_path='driver/chromedriver.exe')
-# service = Service(executable_path='/usr/bin/chromedriver')
+# service = Service(executable_path='driver/chromedriver.exe')
+service = Service(executable_path='/usr/bin/chromedriver')
 options = webdriver.ChromeOptions()
 options.page_load_strategy = 'eager'
 options.add_argument('--start-maximized')
 options.add_argument('--headless')
 options.add_argument('--disable-gpu')
-# options.add_argument('--no-sandbox')
+options.add_argument('--no-sandbox')
 options.add_argument('--disable-dev-shm-usage')
 options.add_argument('--ignore-certificate-errors')
 options.add_argument('--ignore-ssl-errors')
@@ -962,7 +960,7 @@ print('Message Thread Started')
 while True:
     cursor.execute('SELECT * FROM login_credential')
     for row in cursor.fetchall():
-        order, database_shop_name, email, password, cookie, remark, login_at = row
+        order, database_shop_name, email, password, cookie, remark = row
         driver = driver_array[order - 1]
         wait = wait_array[order - 1]
         mouse = mouse_array[order - 1]
@@ -970,7 +968,6 @@ while True:
         try:
             load_cookies(cookie)
             check_message_status()
-            fix_reply()
             driver.switch_to.window(driver.window_handles[1])
             process_list = (('question', 60),
                             ('home_inspection', 0),
