@@ -99,6 +99,9 @@ def login():
     cursor.execute('UPDATE login_credential SET cookie = ? WHERE id = ?', (new_cookie, order))
     conn.commit()
     print('Login Successful')
+    cursor.execute('UPDATE login_credential SET login_at = ? WHERE id = ?',
+                   (time.strftime("%Y-%m-%d %H:%M:%S"), order))
+    conn.commit()
     load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
 
 
@@ -185,7 +188,6 @@ def check_message_status():
             By.XPATH, "//span[contains(text(),'Unreplied')]").get_attribute('class')
         if 'SessionFilterTagActive' not in unreplied_filter_class:
             driver.find_element(By.XPATH, "//span[contains(text(),'Unreplied')]").click()
-            time.sleep(1)
         if wait.until(ec.presence_of_element_located(
                 (By.CSS_SELECTOR, '[class^="SessionList"]'))).text == 'No Data':
             cursor.execute('UPDATE login_credential SET remark = ? WHERE id = ?',
@@ -425,8 +427,13 @@ def message_scraping(ignore=()):  # inside message block
         return None
     msg_window = wait.until(
         ec.presence_of_element_located((By.CSS_SELECTOR, '[class^="scrollbar-styled MessageList"]')))
-    mouse.move_to_element(msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1]).perform()
-    mouse.send_keys_to_element(msg_window, Keys.PAGE_DOWN).perform()
+    # mouse.move_to_element(msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1]).perform()
+    mouse.send_keys_to_element(driver.find_element(By.CSS_SELECTOR, '.message-panel'), Keys.END).perform()
+    try:
+        driver.find_element(By.CSS_SELECTOR, '.ant-image-preview-close').click()
+    except NoSuchElementException:
+        pass
+    driver.save_screenshot('Message Screenshot/' + database_shop_name + '.png')
     for msg_block in msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[::-1]:
         msg_block_class = msg_block.get_attribute('class')
         if 'user-type-2' in msg_block_class:
@@ -713,11 +720,15 @@ def load_page(page_url, element='body'):
         elif triumph > 10:
             raise Exception('Page loading failed {} times'.format(triumph))
         load_page(page_url, element)
+    return True
 
 
 def question():
     print('Checking question status')
-    load_page('https://sellercenter.daraz.com.bd/msg/index', '[role="tablist"]')
+    if not load_page('https://sellercenter.daraz.com.bd/msg/index', '[role="tablist"]'):
+        print('Question Page Loading Failed')
+        wait_for_connection()
+        return False
     try:
         question_element = wait.until(
             ec.presence_of_element_located((By.XPATH, "//div[contains(text(),'Customer Question')]"))).text
@@ -910,14 +921,14 @@ def echo_message(chat_id, message_text):
 
 # Handling external reply ended
 
-# service = Service(executable_path='driver/chromedriver.exe')
-service = Service(executable_path='/usr/bin/chromedriver')
+service = Service(executable_path='driver/chromedriver.exe')
+# service = Service(executable_path='/usr/bin/chromedriver')
 options = webdriver.ChromeOptions()
 options.page_load_strategy = 'eager'
 options.add_argument('--start-maximized')
 options.add_argument('--headless')
 options.add_argument('--disable-gpu')
-options.add_argument('--no-sandbox')
+# options.add_argument('--no-sandbox')
 options.add_argument('--disable-dev-shm-usage')
 options.add_argument('--ignore-certificate-errors')
 options.add_argument('--ignore-ssl-errors')
@@ -951,7 +962,7 @@ print('Message Thread Started')
 while True:
     cursor.execute('SELECT * FROM login_credential')
     for row in cursor.fetchall():
-        order, database_shop_name, email, password, cookie, remark = row
+        order, database_shop_name, email, password, cookie, remark, login_at = row
         driver = driver_array[order - 1]
         wait = wait_array[order - 1]
         mouse = mouse_array[order - 1]
