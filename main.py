@@ -981,6 +981,7 @@ print('Message Thread Started')
 
 while True:
     cursor.execute('SELECT * FROM login_credential')
+
     for row in cursor.fetchall():
         order, database_shop_name, email, password, cookie, remark = row
         driver = driver_array[order - 1]
