@@ -69,7 +69,7 @@ def process_time(process_name, execution_period=180, shop_name='all'):
 
 def between_time():
     current_time = datetime.now().time()
-    start_time = datetime.strptime('02:00:00', '%H:%M:%S').time()
+    start_time = datetime.strptime('03:00:00', '%H:%M:%S').time()
     end_time = datetime.strptime('10:00:00', '%H:%M:%S').time()
     if start_time <= current_time <= end_time:
         return True
@@ -128,8 +128,6 @@ def load_cookies(cookie_file):
 def simplified_text(input_string):
     # Define a regular expression pattern to match special characters and spaces
     pattern = r'[^\w\s\➛\u0980-\u09FF[\]]+'
-
-    # Use re.sub to remove special characters while preserving Bangla text
     cleaned_string = re.sub(pattern, '', input_string).strip()
     return cleaned_string.lower()
 
@@ -138,21 +136,25 @@ def to_md(text):
     return re.sub(r'([\[*_])', r'\\\1', text)
 
 
-def send_image(shop_name, sender_name, msg_time, msg_telegram):
+def send_image(shop_name, sender_name):
     image_name = shop_name + '-' + simplified_text(sender_name)
     driver.save_screenshot('Message Screenshot/' + image_name + '.png')
     try:
         bot.send_photo('1783177827', open('Message Screenshot/' + image_name + '.png', 'rb'))
-        send_message('*{}* ♯{} ➤{}\n࿐{}'.format(shop_name, msg_time, msg_telegram, to_md(sender_name)))
     except Exception as msg_sending_error:
         print(msg_sending_error)
     os.remove('Message Screenshot/' + image_name + '.png')
 
 
-def recheck(customer_msg, shop_name, sender_name, msg_time, auto_reply):
-    msg_telegram_re = simplified_text(message_scraping(auto_reply[0]))
+def recheck(customer_msg, shop_name, sender_name, msg_time, reply):
+    msg_telegram_re = simplified_text(message_scraping(reply))
     if customer_msg != msg_telegram_re:
-        send_image(shop_name, sender_name, msg_time, msg_telegram_re)
+        msg_telegram = re.sub(r'([\[*_])', r'\\\1', msg_telegram_re.replace(customer_msg, ''))
+        if msg_telegram.startswith('➛'):
+            msg_telegram = msg_telegram[1:]
+        send_image(shop_name, sender_name)
+        send_message('__✺Extra__ *{}* ♯{} ➤{}\n࿐{}'.
+                     format(shop_name, msg_time, msg_telegram, to_md(sender_name)))
 
 
 def check_message_status():
@@ -205,9 +207,18 @@ def check_message_status():
             continue
         msg_telegram = re.sub(r'([\[*_])', r'\\\1', msg_title)
         customer_msg = simplified_text(msg_title)
-        sender_name = message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTarget"]').text
-        cursor.execute("SELECT reply FROM auto_reply WHERE message = ?", (customer_msg,))
-        auto_reply = cursor.fetchall()
+        try:
+            sender_name = message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTarget"]').text
+        except NoSuchElementException:
+            return True
+        auto_reply = []
+        for message in customer_msg.split('➛'):
+            cursor.execute("SELECT reply FROM auto_reply WHERE message = ?", (message,))
+            stored_reply = cursor.fetchone()
+            if stored_reply is None:
+                auto_reply = []
+                break
+            auto_reply.append(stored_reply)
         cursor.execute(
             'SELECT reply FROM external_reply WHERE query = ? AND shop_name = ? AND customer_name = ?',
             (customer_msg, shop_name, sender_name))
@@ -219,16 +230,19 @@ def check_message_status():
         last_send_time = cursor.fetchone()
         if auto_reply:
             input_message(auto_reply)
-            send_message('{} ♯{} ➤{}\n➥ {}'.format(
-                shop_name, msg_time, msg_telegram, auto_reply[0][0], to_md(sender_name)), True)
+            auto_reply_1d = []
+            for reply in auto_reply:
+                auto_reply_1d.append(reply[0])
+            # send_message('{} ♯{} ➤{}\n➥ {}'.format(
+            #     shop_name, msg_time, msg_telegram, '⌒'.join(auto_reply_1d), to_md(sender_name)), True)
             recheck(customer_msg, shop_name, sender_name, msg_time, auto_reply)
         elif external_reply:
             input_message(external_reply)
             for single_reply in external_reply:
                 send_message('{} ♯{} ➤{}\n╰┈➤ {}'.
                              format(shop_name, msg_time, msg_telegram, to_md(single_reply[0])), True)
-            cursor.execute('DELETE FROM external_reply WHERE query = ? AND shop_name = ?',
-                           (customer_msg, shop_name))
+                cursor.execute('DELETE FROM external_reply WHERE (reply, shop_name, customer_name) = (?, ?, ?)',
+                               (single_reply[0], shop_name, sender_name))
             cursor.execute('DELETE FROM send_time WHERE (customer_name, query, shop_name) = (?, ?, ?)',
                            (sender_name, customer_msg, shop_name))
             conn.commit()
@@ -239,7 +253,9 @@ def check_message_status():
                         datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S') -
                         datetime.strptime(last_send_time[0], '%Y-%m-%d %H:%M:%S'))
                 if time_difference > timedelta(minutes=30):
-                    send_image(shop_name, sender_name, msg_time, msg_telegram)
+                    send_image(shop_name, sender_name)
+                    send_message('*{}* ♯{} ➤{}\n࿐{}'.
+                                 format(shop_name, msg_time, msg_telegram, to_md(sender_name)))
                     cursor.execute('UPDATE send_time SET send_time = ? WHERE (customer_name, query, shop_name) = '
                                    '(?, ?, ?)',
                                    (time.strftime("%Y-%m-%d %H:%M:%S"), sender_name, customer_msg, shop_name))
@@ -247,7 +263,8 @@ def check_message_status():
                 cursor.execute(
                     'INSERT INTO send_time (customer_name, query, shop_name, send_time) VALUES (?, ?, ?, ?)',
                     (sender_name, customer_msg, shop_name, time.strftime("%Y-%m-%d %H:%M:%S")))
-                send_image(shop_name, sender_name, msg_time, msg_telegram)
+                send_image(shop_name, sender_name)
+                send_message('*{}* ♯{} ➤{}\n࿐{}'.format(shop_name, msg_time, msg_telegram, to_md(sender_name)))
             conn.commit()
     driver.refresh()
     cursor.execute('UPDATE login_credential SET remark = ? WHERE id = ?',
@@ -308,7 +325,7 @@ def campaign_alert():
         minute_left = (time_difference.seconds % 3600) // 60
         if time_difference > timedelta(minutes=0) and status == 'True':
             send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n☪{}'.
-                         format(shop_name, hour_left, minute_left, campaign_name))
+                         format(shop_name, hour_left, minute_left, to_md(campaign_name)))
         elif time_difference <= timedelta(minutes=0):
             cursor.execute('DELETE FROM campaign_alert WHERE serial = ?', (serial,))
             conn.commit()
@@ -381,14 +398,14 @@ def home_inspection():
         campaign_hour = int(time_elements[1].text)
         if campaign_day == 0 and campaign_hour <= 12:
             send_message('Join Campaign 彡*{}* 🪐{}Hour(s) left\n☪{}'.
-                         format(database_shop_name, campaign_hour, campaign_title))
+                         format(database_shop_name, campaign_hour, to_md(campaign_title)))
             cursor.execute(
                 "UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
                 (datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S') -
                  timedelta(hours=2), database_shop_name, 'home_inspection'))
             conn.commit()
             return True
-        if campaign_day < 0:
+        if -1 < campaign_day < 0:
             send_message('Join Campaign 彡*{}* 🪐{}Hour(s) _late_\n☪{}'.
                          format(database_shop_name, 24 - campaign_hour, campaign_title))
             cursor.execute(
@@ -424,25 +441,20 @@ def message_scraping(ignore=()):  # inside message block
         return None
     msg_window = wait.until(
         ec.presence_of_element_located((By.CSS_SELECTOR, '[class^="scrollbar-styled MessageList"]')))
-    # mouse.move_to_element(msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1]).perform()
-    mouse.send_keys_to_element(driver.find_element(By.CSS_SELECTOR, '.message-panel'), Keys.END).perform()
-    time.sleep(1)
-    try:
-        driver.find_element(By.CSS_SELECTOR, '.ant-image-preview-close').click()
-    except NoSuchElementException:
-        pass
-    driver.save_screenshot('Message Screenshot/' + database_shop_name + '.png')
+    mouse.move_to_element(msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1]).perform()
     for msg_block in msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[::-1]:
         msg_block_class = msg_block.get_attribute('class')
         if 'user-type-2' in msg_block_class:
             if 'row-card-image' in msg_block_class:
                 driver.execute_script("arguments[0].remove();", msg_block)
                 continue
-            elif 'row-card-text' in msg_block_class:
-                message_text = msg_block.find_element(By.CSS_SELECTOR, '.message-text-box').text
-                if message_text in ignore:
-                    ignore = tuple(x for x in ignore if x != message_text)
-                    continue
+            # elif 'row-card-text' in msg_block_class:
+            #     message_text = msg_block.find_element(By.CSS_SELECTOR, '.message-text-box').text
+            #     if (message_text,) in ignore:
+            #         ignore = tuple(x for x in ignore if x != message_text)
+            #         continue
+            if ignore != () and message_summary == '':
+                continue
             if message_summary == '':
                 return None
             break
@@ -524,8 +536,8 @@ def campaign_overview():
         time.sleep(1)
         for sub_tab in driver.find_elements(
                 By.CSS_SELECTOR, '#centerContent > :nth-child(1) > :nth-child(1) > :nth-child(4) li'):
-            if sub_tab.text == '':
-                continue
+            # if sub_tab.text == '':
+            #     continue
             wait.until(ec.element_to_be_clickable(sub_tab))
             sub_tab.click()
             time.sleep(1)
@@ -541,13 +553,13 @@ def campaign_overview():
                     for campaign in wait.until(
                             ec.presence_of_all_elements_located((By.CSS_SELECTOR, 'tbody tr'))):
                         status = campaign.find_element(By.CSS_SELECTOR, 'td[name="status"]').text
-                        if status == 'Pending':
+                        if status == 'Pending' or status == 'Registration in Progress':
                             name = campaign.find_element(By.CSS_SELECTOR, 'td[name="name"]').text
                             end_date = (campaign.find_element(
                                 By.CSS_SELECTOR, "td[name='registerEndTime']").text
                                         .split('GMT')[0].strip())
                             time_left = datetime.strptime(end_date, '%d %b %Y %H:%M') - datetime.now()
-                            if time_left < timedelta(hours=16):
+                            if time_left < timedelta(hours=18):
                                 hour_left = time_left.seconds // 3600
                                 minute_left = (time_left.seconds % 3600) // 60
                                 # send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n☪{}'.
@@ -568,7 +580,7 @@ def campaign_overview():
                                 hour_left = int(time_part[:-1])
                             elif time_part.endswith("m"):
                                 minute_left = int(time_part[:-1])
-                        if day_left == 0 and hour_left <= 16:
+                        if day_left == 0 and hour_left <= 18:
                             # send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n☪{}'.
                             #              format(database_shop_name, hour_left, minute_left, name))
                             campaign_insertion(name, hour_left, minute_left)
@@ -733,7 +745,7 @@ def question():
         # Get the number of question
         question_count = int(question_element.split('(')[1].split(')')[0])
         if question_count > 0:
-            send_message('*{}* has {}* ↷ question(s)'.format(database_shop_name, question_count))
+            send_message('*{}* has *{}* question(s)'.format(database_shop_name, question_count))
     except Exception as question_error:
         print(question_error)
         return True
@@ -852,7 +864,7 @@ def pause_campaign_alert(message):
             cursor.execute('UPDATE campaign_alert SET status = ? WHERE name = ? AND shop_name = ?',
                            ('False', campaign_name, shop_name))
             conn.commit()
-            bot.reply_to(message, '_Campaign Alert Paused_\n📌{}'.format(campaign_name))
+            bot.reply_to(message, '_Campaign Alert Paused_\n📌{}'.format(to_md(campaign_name)))
             return True
     except Exception as pause_error:
         print(pause_error)
@@ -876,11 +888,15 @@ def handle_message(message):
 
 
 # Function to store replied messages in the database
-def store_replied_message(message, chat_id, message_text, replied_message_text):
+def store_replied_message(message, chat_id, message_text, replied_message):
     # Create database connection
     external_reply_db = sqlite3.connect('shop_data.db')
     external_reply_cursor = external_reply_db.cursor()
 
+    if replied_message.startswith('✺Extra'):
+        replied_message_text = replied_message.split('✺Extra')[1].strip()
+    else:
+        replied_message_text = replied_message
     try:
         shop_name = replied_message_text.split('♯')[0].strip()
         query = replied_message_text.split('➤')[1].split('࿐')[0].strip()
@@ -905,6 +921,12 @@ def store_replied_message(message, chat_id, message_text, replied_message_text):
                                           (simplified_text(query), message_text))
             external_reply_db.commit()
             bot.send_message(chat_id, "_Reply saved successfully_࿐")
+            return True
+    elif replied_message.startswith('✺Extra'):
+        cursor.execute('INSERT INTO reply_fix (reply, shop_name, customer_name, message_id) VALUES (?, ?, ?, ?)',
+                       (message_text, shop_name, customer_name, message.message_id))
+        conn.commit()
+        return True
     external_reply_cursor.execute(
         'INSERT INTO external_reply ('
         'query, reply, shop_name, customer_name, message_id) VALUES (?, ?, ?, ?, ?)',
@@ -932,7 +954,7 @@ options.add_argument('--ignore-certificate-errors')
 options.add_argument('--ignore-ssl-errors')
 options.add_argument('--disable-browser-side-navigation')
 # options.add_argument('--blink-settings=imagesEnabled=false')
-options.add_argument("--window-size=1080, 1080")
+options.add_argument("--window-size=1280,1080")
 options.add_argument("--zoom=1.5")
 options.add_argument(
     "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -1014,6 +1036,10 @@ while True:
                 fix_reply()
                 print('■━■━■━■ Fix Tunneling Completed')
         except Exception as error:
+            try:
+                send_message('*☠Error* 彡{} ☄ {}'.format(database_shop_name, type(error).__name__))
+            except Exception as error_info:
+                print(error_info)
             print(error)
             driver.save_screenshot('Error Screenshot/' + database_shop_name +
                                    time.strftime(" %Y%m%d-%H%M%S") + '.png')
