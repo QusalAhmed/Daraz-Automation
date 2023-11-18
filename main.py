@@ -167,8 +167,8 @@ def check_message_status():
                        (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'check_message_status'))
         conn.commit()
         try:
-            wait.until_not(ec.presence_of_element_located((By.CSS_SELECTOR, '.chat-spin-dot-item')))
-            wait.until(ec.presence_of_element_located((By.XPATH, "//span[contains(text(),'Unreplied')]")))
+            wait.until_not(ec.presence_of_element_located((By.CSS_SELECTOR, '.chat-spin-dot-spin')))
+            # wait.until(ec.presence_of_element_located((By.XPATH, "//span[contains(text(),'Unreplied')]")))
             # total_msg = wait.until(ec.presence_of_element_located(
             #     (By.CSS_SELECTOR, '[class^="SessionFilterOwnerTypeButton"]'))).text
             # if re.sub(r'\D', '', total_msg) == '0':
@@ -207,10 +207,11 @@ def check_message_status():
             continue
         msg_telegram = re.sub(r'([\[*_])', r'\\\1', msg_title)
         customer_msg = simplified_text(msg_title)
-        try:
-            sender_name = message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTarget"]').text
-        except NoSuchElementException:
-            return True
+        sender_name = driver.find_element(By.CSS_SELECTOR, '[class^="UserNickname"]').text
+        # try:
+        #     sender_name = message_element.find_element(By.CSS_SELECTOR, '[class^="SessionTarget"]').text
+        # except NoSuchElementException:
+        #     return True
         auto_reply = []
         for message in customer_msg.split('➛'):
             cursor.execute("SELECT reply FROM auto_reply WHERE message = ?", (message,))
@@ -293,7 +294,7 @@ def fix_reply():
         if ('user-type-2' in msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1].
                 get_attribute('class')):
             input_message(((reply,),))
-            send_message('*Fix Reply* 彡{} 🕊{}✸'.format(shop_name, to_md(reply)))
+            send_message('*Fix Reply* 彡{} 🕊{}✸ ࿐{}'.format(shop_name, to_md(reply), customer_name), False)
             cursor.execute('DELETE FROM reply_fix WHERE serial = ?', (serial,))
             conn.commit()
         else:
@@ -442,6 +443,7 @@ def message_scraping(ignore=()):  # inside message block
     msg_window = wait.until(
         ec.presence_of_element_located((By.CSS_SELECTOR, '[class^="scrollbar-styled MessageList"]')))
     mouse.move_to_element(msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1]).perform()
+    mouse.scroll_to_element(msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1]).perform()
     for msg_block in msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[::-1]:
         msg_block_class = msg_block.get_attribute('class')
         if 'user-type-2' in msg_block_class:
@@ -470,6 +472,7 @@ def message_scraping(ignore=()):  # inside message block
             product_details = msg_block.find_element(By.CSS_SELECTOR, '.lzd-pro-desc').text
             message_summary += '\nProduct: ' + product_details
         elif 'row-card-image' in msg_block_class:
+            time.sleep(1)
             mouse.send_keys_to_element(msg_window, Keys.PAGE_DOWN).perform()
             try:
                 message_summary += ('\nImage: ' + msg_block.
@@ -837,12 +840,28 @@ def wait_for_connection():
 def send_welcome(message):
     stat_db = sqlite3.connect('shop_data.db')
     stat_cursor = stat_db.cursor()
-    stat_cursor.execute('SELECT remark FROM login_credential')
+    stat_cursor.execute('SELECT remark FROM login_credential order by remark')
     stat = ''
     for shop_stat in stat_cursor.fetchall():
         stat += "{}\n".format(shop_stat[0])
     bot.send_message(message.chat.id, stat)
     stat_db.close()
+
+
+@bot.message_handler(commands=['retry'])
+def retry(message):
+    replied_text = message.reply_to_message.text
+    if replied_text.startswith('☠Reply Dropped'):
+        query = replied_text.split('🕊')[1].split('➥')[0].strip()
+        reply = replied_text.split('➥')[1].split('࿐')[0].strip()
+        shop_name = replied_text.split('彡')[1].split('🕊')[0].strip()
+        customer_name = replied_text.split('࿐')[1].split('🗝️')[0].strip()
+        message_id = int(replied_text.split('🗝️')[1].strip())
+        cursor.execute('INSERT INTO external_reply '
+                       '(query, reply, shop_name, customer_name, message_id) VALUES (?, ?, ?, ?, ?)',
+                       (query, reply, shop_name, customer_name, message_id))
+        conn.commit()
+        bot.reply_to(message, '_Inserted to retry_࿐')
 
 
 @bot.message_handler(commands=['debug'])
@@ -869,6 +888,18 @@ def pause_campaign_alert(message):
     except Exception as pause_error:
         print(pause_error)
         bot.reply_to(message, '_Can\'t process your reply_࿐')
+
+
+@bot.message_handler(commands=['clear'])
+def pause_campaign_alert(message):
+    argument = message.text.split(' ')[1]
+    allowed_process = ('send_time', 'external_reply', 'reply_fix', 'campaign_alert')
+    if argument in allowed_process:
+        cursor.execute('DELETE FROM {} where TRUE'.format(argument))
+        conn.commit()
+        bot.reply_to(message, '•{}• _Cleared_✄'.format(to_md(argument)))
+    else:
+        bot.reply_to(message, '_Access not found_ 🗝️')
 
 
 @bot.message_handler(func=lambda message: True)
@@ -932,6 +963,9 @@ def store_replied_message(message, chat_id, message_text, replied_message):
         'query, reply, shop_name, customer_name, message_id) VALUES (?, ?, ?, ?, ?)',
         (simplified_text(query), message_text, shop_name, customer_name, message.message_id))
     external_reply_db.commit()
+    cursor.execute('DELETE FROM send_time WHERE (shop_name, customer_name) = (?, ?)',
+                   (shop_name, customer_name))
+    conn.commit()
 
 
 # Function to echo normal replies
@@ -981,7 +1015,6 @@ print('Message Thread Started')
 
 while True:
     cursor.execute('SELECT * FROM login_credential')
-
     for row in cursor.fetchall():
         order, database_shop_name, email, password, cookie, remark = row
         driver = driver_array[order - 1]
@@ -1024,9 +1057,9 @@ while True:
                         continue
                     cursor.execute('DELETE FROM external_reply WHERE serial = ?', (msg_serial[0],))
                     conn.commit()
-                    bot.send_message('1783177827', '*☠Reply Dropped* 彡{} 🕊{} ➥{}'.
-                                     format(msg_info[3], msg_info[1], to_md(msg_info[2])),
-                                     reply_to_message_id=msg_info[5])
+                    bot.send_message('1783177827', '*☠Reply Dropped* 彡{} 🕊{} ➥{}\n࿐{} 🗝️{}'.
+                                     format(msg_info[3], msg_info[1], to_md(msg_info[2]), msg_info[4],
+                                            msg_info[5]), reply_to_message_id=msg_info[5])
                 print('■━■━■━■ Tunneling Completed')
 
             for fix_msg_shop in cursor.execute('SELECT DISTINCT shop_name FROM reply_fix').fetchall():
