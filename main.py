@@ -10,8 +10,7 @@ import requests
 import telebot
 from datetime import datetime, timedelta
 from selenium import webdriver
-from selenium.common.exceptions import (NoSuchElementException, StaleElementReferenceException,
-                                        TimeoutException)
+from selenium.common.exceptions import (NoSuchElementException, TimeoutException)
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as ec
@@ -25,6 +24,7 @@ logging.basicConfig(level=logging.INFO, filename='bot.log', filemode='w',
 # setting database
 conn = sqlite3.connect('shop_data.db', check_same_thread=False)
 cursor = conn.cursor()
+tele_cursor = conn.cursor()
 # cursor.execute("UPDATE process_time SET execution_time = ? WHERE name = ?",
 #                ('2022-10-07 21:31:06', 'check_message_status'))
 # conn.commit()
@@ -34,10 +34,23 @@ extra_process = True
 triumph = None
 
 # Setting bot data
-essential_cursor = conn.cursor()
-bot_token = essential_cursor.execute(
+# essential_cursor = conn.cursor()
+bot_token = cursor.execute(
     'SELECT value FROM essentials WHERE name = ?', ('bot_token',)).fetchone()[0]
 bot = telebot.TeleBot(bot_token, parse_mode='Markdown')
+# response_bot_token = essential_cursor.execute(
+#     'SELECT value FROM essentials WHERE name = ?', ('response_bot_token',)).fetchone()[0]
+# response_bot = telebot.TeleBot(response_bot_token, parse_mode='Markdown')
+# campaign_bot_token = essential_cursor.execute(
+#     'SELECT value FROM essentials WHERE name = ?', ('campaign_bot_token',)).fetchone()[0]
+# campaign_bot = telebot.TeleBot(campaign_bot_token, parse_mode='Markdown')
+
+bot_names = ['response_bot', 'campaign_bot', 'general_bot']
+bot_list = {}
+for bot_info in bot_names:
+    bot_token = cursor.execute(
+        'SELECT value FROM essentials WHERE name = ?', (bot_info + '_token',)).fetchone()[0]
+    bot_list[bot_info] = telebot.TeleBot(bot_token, parse_mode='Markdown')
 
 
 def instance_data(shop_name, ins_driver, ins_wait, ins_mouse):
@@ -97,25 +110,46 @@ def login():
         return True
     new_cookie = json.dumps(driver.get_cookies())
     cursor.execute('UPDATE login_credential SET cookie = ? WHERE id = ?', (new_cookie, order))
+    cursor.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
+                   (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'login_time'))
     conn.commit()
     print('Login Successful')
-    load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
+    # load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
 
 
-def send_message(message_text, notify=False):
+def send_message(message_text, notify=False, bot_name='message'):
     chat_id = '1783177827'  # -1001969295732
     # chat_id_group = '-1001982474657'
-    bot.send_message(chat_id, message_text, disable_notification=notify)
+    match bot_name:
+        case 'response':
+            bot_list['response_bot'].send_message(chat_id, message_text, disable_notification=notify)
+        case 'campaign':
+            bot_list['campaign_bot'].send_message(chat_id, message_text, disable_notification=notify)
+        case 'general':
+            bot_list['general_bot'].send_message(chat_id, message_text, disable_notification=notify)
+        case 'message':
+            bot.send_message(chat_id, message_text, disable_notification=notify)
     # bot.send_message(chat_id_group, message_text, disable_notification=notify)
 
 
-def load_cookies(cookie_file):
-    driver.switch_to.window(driver.window_handles[1])
-    load_page('https://sellercenter.daraz.com.bd/v2/home')
-    if 'daraz.com.bd/v2/home' in driver.current_url:
-        driver.switch_to.window(driver.window_handles[0])
-        return True
+def cookie_validation(shop_name):
     driver.switch_to.window(driver.window_handles[0])
+    if process_time('login_time', 720, shop_name):
+        login()
+        global extra_process
+        extra_process = False
+        load_page('https://sellercenter.daraz.com.bd/v2/chat/window')
+        wait.until_not(ec.presence_of_element_located((By.CSS_SELECTOR, '.chat-spin-dot-spin')))
+        return True
+
+
+def load_cookies(cookie_file):
+    # driver.switch_to.window(driver.window_handles[1])
+    # load_page('https://sellercenter.daraz.com.bd/v2/home')
+    # if 'daraz.com.bd/v2/home' in driver.current_url:
+    #     driver.switch_to.window(driver.window_handles[0])
+    #     return True
+    # driver.switch_to.window(driver.window_handles[0])
     driver.delete_all_cookies()
     load_page('https://sellercenter.daraz.com.bd/apps/seller/login')
     cookies = json.loads(cookie_file)
@@ -147,14 +181,49 @@ def send_image(shop_name, sender_name):
 
 
 def recheck(customer_msg, shop_name, sender_name, msg_time, reply):
-    msg_telegram_re = simplified_text(message_scraping(reply))
+    customer_message_re = message_scraping(reply)
+    msg_telegram_re = simplified_text(customer_message_re)
     if customer_msg != msg_telegram_re:
-        msg_telegram = re.sub(r'([\[*_])', r'\\\1', msg_telegram_re.replace(customer_msg, ''))
+        new_message = re.sub(r'^➛|➛$', '', customer_msg.replace(msg_telegram_re, ''))
+        cursor.execute('SELECT * FROM auto_reply WHERE message = ?', (new_message,))
+        response = cursor.fetchone()
+        if response is not None:
+            input_message((response,))
+            recheck(new_message, shop_name, sender_name, msg_time, response)
+            return True
+        msg_telegram = re.sub(r'([\[*_])', r'\\\1', customer_message_re.replace(customer_msg, ''))
         if msg_telegram.startswith('➛'):
             msg_telegram = msg_telegram[1:]
         send_image(shop_name, sender_name)
         send_message('__✺Extra__ *{}* ♯{} ➤{}\n࿐{}'.
                      format(shop_name, msg_time, msg_telegram, to_md(sender_name)))
+
+
+def to_time(time_string):
+    match = re.search(r'(?:(\d+)m\s*)?(?:(\d+)s)?', time_string)
+    if match:
+        minutes, seconds = map(int, match.groups(default='0'))
+        time_object = timedelta(minutes=minutes, seconds=seconds)
+        return time_object
+    else:
+        print("Invalid time format")
+        return datetime.strptime('00:00:00', '%H:%M:%S')
+
+
+def reset_im_interface():
+    driver.refresh()
+    try:
+        wait.until_not(ec.presence_of_element_located((By.CSS_SELECTOR, '.chat-spin-dot-spin')))
+        # wait.until(ec.presence_of_element_located((By.XPATH, "//span[contains(text(),'Unreplied')]")))
+        # total_msg = wait.until(ec.presence_of_element_located(
+        #     (By.CSS_SELECTOR, '[class^="SessionFilterOwnerTypeButton"]'))).text
+        # if re.sub(r'\D', '', total_msg) == '0':
+        #     raise TimeoutException
+    except TimeoutException:
+        wait_for_connection()
+        driver.refresh()
+        # check_message_status()
+        return True
 
 
 def check_message_status():
@@ -166,17 +235,7 @@ def check_message_status():
         cursor.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
                        (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'check_message_status'))
         conn.commit()
-        try:
-            wait.until_not(ec.presence_of_element_located((By.CSS_SELECTOR, '.chat-spin-dot-spin')))
-            # wait.until(ec.presence_of_element_located((By.XPATH, "//span[contains(text(),'Unreplied')]")))
-            # total_msg = wait.until(ec.presence_of_element_located(
-            #     (By.CSS_SELECTOR, '[class^="SessionFilterOwnerTypeButton"]'))).text
-            # if re.sub(r'\D', '', total_msg) == '0':
-            #     raise TimeoutException
-        except TimeoutException:
-            driver.refresh()
-            check_message_status()
-            return True
+        reset_im_interface()
     print('Checking message status')
     cursor.execute('SELECT value FROM essentials WHERE name = ?', ('debug',))
     if cursor.fetchone()[0] == '1':
@@ -230,6 +289,13 @@ def check_message_status():
             (sender_name, customer_msg, shop_name))
         last_send_time = cursor.fetchone()
         if auto_reply:
+            try:
+                message_timer = driver.find_element(By.CSS_SELECTOR, '[class^="SessionCountDown"]').text
+                if auto_reply[0][0] == 'কিভাবে সহায়তা করতে পারি?' and to_time(message_timer) > timedelta(
+                        minutes=9):
+                    return True
+            except NoSuchElementException:
+                pass
             input_message(auto_reply)
             auto_reply_1d = []
             for reply in auto_reply:
@@ -237,17 +303,19 @@ def check_message_status():
             # send_message('{} ♯{} ➤{}\n➥ {}'.format(
             #     shop_name, msg_time, msg_telegram, '⌒'.join(auto_reply_1d), to_md(sender_name)), True)
             recheck(customer_msg, shop_name, sender_name, msg_time, auto_reply)
+            reset_im_interface()
         elif external_reply:
             input_message(external_reply)
             for single_reply in external_reply:
-                send_message('{} ♯{} ➤{}\n╰┈➤ {}'.
-                             format(shop_name, msg_time, msg_telegram, to_md(single_reply[0])), True)
+                send_message('{} ♯{} ➤{}\n╰┈➤ {}'.format(shop_name, msg_time, msg_telegram,
+                                                         to_md(single_reply[0])), bot_name='response')
                 cursor.execute('DELETE FROM external_reply WHERE (reply, shop_name, customer_name) = (?, ?, ?)',
                                (single_reply[0], shop_name, sender_name))
             cursor.execute('DELETE FROM send_time WHERE (customer_name, query, shop_name) = (?, ?, ?)',
                            (sender_name, customer_msg, shop_name))
             conn.commit()
             recheck(customer_msg, shop_name, sender_name, msg_time, external_reply)
+            reset_im_interface()
         else:
             if last_send_time is not None:
                 time_difference = (
@@ -267,7 +335,7 @@ def check_message_status():
                 send_image(shop_name, sender_name)
                 send_message('*{}* ♯{} ➤{}\n࿐{}'.format(shop_name, msg_time, msg_telegram, to_md(sender_name)))
             conn.commit()
-    driver.refresh()
+    # driver.refresh()
     cursor.execute('UPDATE login_credential SET remark = ? WHERE id = ?',
                    (time.strftime("%Y-%m-%d %H:%M:%S"), order))
     conn.commit()
@@ -294,11 +362,12 @@ def fix_reply():
         if ('user-type-2' in msg_window.find_elements(By.CSS_SELECTOR, '[class^="messageRow"]')[-1].
                 get_attribute('class')):
             input_message(((reply,),))
-            send_message('*Fix Reply* 彡{} 🕊{}✸ ࿐{}'.format(shop_name, to_md(reply), customer_name), False)
+            send_message('*Fix Reply* 彡{} 🕊{}✸ ࿐{}'.
+                         format(shop_name, to_md(reply), customer_name), True, 'response')
             cursor.execute('DELETE FROM reply_fix WHERE serial = ?', (serial,))
             conn.commit()
         else:
-            send_message('*☠Drop Fix Reply* 彡{} 🕊{}✸'.format(shop_name, to_md(reply), True))
+            send_message('*☠Drop Fix Reply* 彡{} 🕊{}✸'.format(shop_name, to_md(reply), False))
             cursor.execute('DELETE FROM reply_fix WHERE serial = ?', (serial,))
             conn.commit()
 
@@ -326,7 +395,7 @@ def campaign_alert():
         minute_left = (time_difference.seconds % 3600) // 60
         if time_difference > timedelta(minutes=0) and status == 'True':
             send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n☪{}'.
-                         format(shop_name, hour_left, minute_left, to_md(campaign_name)))
+                         format(shop_name, hour_left, minute_left, to_md(campaign_name)), bot_name='campaign')
         elif time_difference <= timedelta(minutes=0):
             cursor.execute('DELETE FROM campaign_alert WHERE serial = ?', (serial,))
             conn.commit()
@@ -345,6 +414,9 @@ def home_inspection():
                     find_element(By.CSS_SELECTOR, ":nth-child(2)").text)
     review = int(driver.find_element(By.XPATH, "//div[contains(text(),'New Reviews')]/..").
                  find_element(By.CSS_SELECTOR, "span").text)
+    pending_return = int(driver.find_element(By.XPATH, "//div[contains(text(),'Pending Return')]/..").
+                         find_element(By.CSS_SELECTOR, "span").text)
+
     if out_of_stock != '0':
         send_message('Out of Stock ↺ *{}*'.format(database_shop_name))
     if int(seller_pick_quota.split('/')[0]) != int(seller_pick_quota.split('/')[1]):
@@ -353,8 +425,16 @@ def home_inspection():
     # DB
     scrap_element = {
         'Review': review,
+        'Pending Return': pending_return,
+        'Online': int(home_metrics('Online')),
+        'Rejected': int(home_metrics('Rejected')),
         'Product Rating': to_float(home_metrics('Product Rating')),
+        'Seller Rating': to_float(home_metrics('Positive Seller Rating')),
         '%Orders Processed Within SLA': to_float(home_metrics('%Orders Processed Within SLA')),
+        'Cancellation Rate': to_float(home_metrics('Cancellation Rate')),
+        'Quality Issue Rate': to_float(home_metrics('Quality Issue Rate')),
+        'Response Rate': to_float(home_metrics('Response Rate')),
+        'Response Time(min)': to_float(home_metrics('Response Time(min)')),
     }
     for key, value in scrap_element.items():
         cursor.execute(
@@ -368,54 +448,17 @@ def home_inspection():
             conn.commit()
             continue
         if float(value) > float(home_metrics_db[0]):
-            send_message('{}➶ {}*~*{} ⊂⊃ *{}*'.format(key, home_metrics_db[0], value, database_shop_name))
+            send_message('{}➶ {}*~*{} ⊂⊃ *{}*'.
+                         format(key, home_metrics_db[0], value, database_shop_name), bot_name='general')
         elif float(value) < float(home_metrics_db[0]):
-            send_message('{}➴ {}*~*{} ⊂⊃ *{}*'.format(key, home_metrics_db[0], value, database_shop_name))
+            send_message('{}➴ {}*~*{} ⊂⊃ *{}*'.
+                         format(key, home_metrics_db[0], value, database_shop_name), bot_name='general')
         else:
             continue
         cursor.execute(
             'UPDATE home_metrics SET metrics_value = ? WHERE (metrics_type, shop_name) = (?, ?)',
             (value, key, database_shop_name))
         conn.commit()
-
-    # Campaign
-    while True:
-        try:
-            driver.find_element(By.CSS_SELECTOR, '.campaignEventsContent')
-            break
-        except NoSuchElementException:
-            driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.PAGE_DOWN)
-    campaigns = driver.find_elements(By.CSS_SELECTOR,
-                                     '.campaignEventsContent .singleCampaignEventContent')
-    for campaign in campaigns:
-        time_elements = campaign.find_elements(
-            By.CSS_SELECTOR, '.singleCampaignEventBackgroundContent')
-        campaign_title = campaign.find_element(By.CSS_SELECTOR, '.singleCampaignEventTitleStyle').text
-        cursor.execute('SELECT status FROM campaign_alert WHERE name = ? AND shop_name = ?',
-                       (campaign_title, database_shop_name))
-        if cursor.fetchone() == ('False',):
-            continue
-        campaign_day = int(time_elements[0].text)
-        campaign_hour = int(time_elements[1].text)
-        if campaign_day == 0 and campaign_hour <= 12:
-            send_message('Join Campaign 彡*{}* 🪐{}Hour(s) left\n☪{}'.
-                         format(database_shop_name, campaign_hour, to_md(campaign_title)))
-            cursor.execute(
-                "UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
-                (datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S') -
-                 timedelta(hours=2), database_shop_name, 'home_inspection'))
-            conn.commit()
-            return True
-        if -1 < campaign_day < 0:
-            send_message('Join Campaign 彡*{}* 🪐{}Hour(s) _late_\n☪{}'.
-                         format(database_shop_name, 24 - campaign_hour, campaign_title))
-            cursor.execute(
-                "UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
-                (datetime.strptime(time.strftime("%Y-%m-%d %H:%M:%S"), '%Y-%m-%d %H:%M:%S') -
-                 timedelta(hours=2), database_shop_name, 'home_inspection'))
-            conn.commit()
-            return True
-
     cursor.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
                    (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, 'home_inspection'))
     conn.commit()
@@ -513,14 +556,15 @@ def campaign_overview_monitor():
         triumph = 0
     try:
         campaign_overview()
-    except StaleElementReferenceException:
+    except Exception as campaign_error:
+        print(campaign_error)
         driver.save_screenshot('Error Screenshot/' + 'Campaign-' + database_shop_name + '.png')
         wait_for_connection()
         if triumph <= 1:
             campaign_overview_monitor()
             triumph += 1
         else:
-            print('Campaign Overview Maximum Times Failed')
+            print('Campaign Overview Maximum Time Failed')
             return False
         return True
     finally:
@@ -528,26 +572,23 @@ def campaign_overview_monitor():
 
 
 def campaign_overview():
-    if 'https://sellercenter.daraz.com.bd/v2/campaign/portal' not in driver.current_url:
-        load_page('https://sellercenter.daraz.com.bd/v2/campaign/portal', '.next-tabs-nav-scroll')
+    # if 'https://sellercenter.daraz.com.bd/v2/campaign/portal' not in driver.current_url:
+    #     load_page('https://sellercenter.daraz.com.bd/v2/campaign/portal', '.next-tabs-nav-scroll')
     load_page('https://sellercenter.daraz.com.bd/v2/campaign/portal', '.next-tabs-nav-scroll')
     print('Campaign Overview Started')
     for main_tab in driver.find_elements(
             By.CSS_SELECTOR, '#centerContent > :nth-child(1) > :nth-child(1) > :nth-child(3) li'):
-        wait.until(ec.element_to_be_clickable(main_tab))
-        main_tab.click()
+        wait.until(ec.element_to_be_clickable(main_tab)).click()
         time.sleep(1)
         for sub_tab in driver.find_elements(
                 By.CSS_SELECTOR, '#centerContent > :nth-child(1) > :nth-child(1) > :nth-child(4) li'):
-            # if sub_tab.text == '':
-            #     continue
-            wait.until(ec.element_to_be_clickable(sub_tab))
-            sub_tab.click()
+            if sub_tab.text == '':
+                continue
+            wait.until(ec.element_to_be_clickable(sub_tab)).click()
             time.sleep(1)
             for type_tab in driver.find_elements(
                     By.CSS_SELECTOR, '#centerContent > :nth-child(1) > :nth-child(1) > :nth-child(5) li'):
-                wait.until(ec.element_to_be_clickable(type_tab))
-                type_tab.click()
+                wait.until(ec.element_to_be_clickable(type_tab)).click()
                 time.sleep(1)
                 campaign_element = wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, 'tbody tr')))
                 if campaign_element.text == 'No Data' or campaign_element.text == '':
@@ -562,7 +603,7 @@ def campaign_overview():
                                 By.CSS_SELECTOR, "td[name='registerEndTime']").text
                                         .split('GMT')[0].strip())
                             time_left = datetime.strptime(end_date, '%d %b %Y %H:%M') - datetime.now()
-                            if time_left < timedelta(hours=18):
+                            if time_left <= timedelta(hours=29):
                                 hour_left = time_left.seconds // 3600
                                 minute_left = (time_left.seconds % 3600) // 60
                                 # send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n☪{}'.
@@ -583,7 +624,7 @@ def campaign_overview():
                                 hour_left = int(time_part[:-1])
                             elif time_part.endswith("m"):
                                 minute_left = int(time_part[:-1])
-                        if day_left == 0 and hour_left <= 18:
+                        if day_left * 24 + hour_left <= 29:
                             # send_message('Join Campaign 彡*{}* 🪐{}Hour(s) {}Minute(s) left\n☪{}'.
                             #              format(database_shop_name, hour_left, minute_left, name))
                             campaign_insertion(name, hour_left, minute_left)
@@ -604,9 +645,9 @@ def campaign_overview():
                         (By.XPATH, "//div[contains(text(),'Pending Allocation')]"))).text
                     pending_product = int(pending_text.split('(')[1].split(')')[0])
                     if approved_product > 0:
-                        send_message('Flash Sale Approved ↺ *{}*'.format(database_shop_name))
+                        send_message('Flash Sale Approved ↺ *{}*'.format(database_shop_name), bot_name='general')
                     elif pending_product > 0:
-                        send_message('Flash Sale Pending ↺ *{}*'.format(database_shop_name))
+                        send_message('Flash Sale Pending ↺ *{}*'.format(database_shop_name), bot_name='general')
                     driver.close()
                     driver.switch_to.window(driver.window_handles[1])
                     print('Flash Sale Completed')
@@ -631,7 +672,7 @@ def order_limit():
         order_limit_status = ''
     if ("Please process existing orders in order to continue to receive more orders." in order_limit_status
             and order_limit_status != ''):
-        send_message(database_shop_name + ': ' + order_limit_status)
+        send_message(database_shop_name + ': ' + order_limit_status, bot_name='general')
     rts()
 
 
@@ -748,7 +789,8 @@ def question():
         # Get the number of question
         question_count = int(question_element.split('(')[1].split(')')[0])
         if question_count > 0:
-            send_message('*{}* has *{}* question(s)'.format(database_shop_name, question_count))
+            send_message('*{}* has *{}* question(s)'.
+                         format(database_shop_name, question_count), bot_name='general')
     except Exception as question_error:
         print(question_error)
         return True
@@ -767,7 +809,7 @@ def stock_check():
         stock_check()
         return True
     if driver.find_elements(By.CSS_SELECTOR, '.intl-tag-list'):
-        send_message('Stock Out ↺ *{}*'.format(database_shop_name))
+        send_message('Stock Out ↺ *{}*'.format(database_shop_name), bot_name='general')
     cursor.execute("UPDATE process_time SET execution_time = ? WHERE (shop_name, name) = (?, ?)",
                    (time.strftime("%Y-%m-%d %H:%M:%S"), database_shop_name, stock_check.__name__))
     conn.commit()
@@ -809,6 +851,18 @@ def create_instance():
             waits_array.append(ins_wait)
             mouses_array.append(ins_mouse)
             print(shop_info[1] + ' : Instance Created')
+            global database_shop_name, driver, wait, email, password, mouse, order
+            driver = ins_driver
+            wait = ins_wait
+            mouse = ins_mouse
+            database_shop_name = shop_info[1]
+            order = shop_info[0]
+            email = shop_info[2]
+            password = shop_info[3]
+            load_cookies(shop_info[4])
+            driver.switch_to.window(driver.window_handles[0])
+            driver.get('https://sellercenter.daraz.com.bd/v2/chat/window')
+            wait.until_not(ec.presence_of_element_located((By.CSS_SELECTOR, '.chat-spin-dot-spin')))
     except Exception as instance_error:
         print(instance_error)
         close_instance(drivers_array)
@@ -857,20 +911,33 @@ def retry(message):
         shop_name = replied_text.split('彡')[1].split('🕊')[0].strip()
         customer_name = replied_text.split('࿐')[1].split('🗝️')[0].strip()
         message_id = int(replied_text.split('🗝️')[1].strip())
-        cursor.execute('INSERT INTO external_reply '
-                       '(query, reply, shop_name, customer_name, message_id) VALUES (?, ?, ?, ?, ?)',
-                       (query, reply, shop_name, customer_name, message_id))
+        tele_cursor.execute('INSERT INTO external_reply '
+                            '(query, reply, shop_name, customer_name, message_id) VALUES (?, ?, ?, ?, ?)',
+                            (query, reply, shop_name, customer_name, message_id))
         conn.commit()
         bot.reply_to(message, '_Inserted to retry_࿐')
 
 
 @bot.message_handler(commands=['debug'])
 def send_welcome(message):
-    cursor.execute('SELECT value from essentials WHERE name = ?', ('debug',))
-    debug_status = bool(int(cursor.fetchone()[0]))
-    cursor.execute('UPDATE essentials SET value = ? WHERE name = ?', (not debug_status, 'debug'))
+    tele_cursor.execute('SELECT value from essentials WHERE name = ?', ('debug',))
+    debug_status = bool(int(tele_cursor.fetchone()[0]))
+    tele_cursor.execute('UPDATE essentials SET value = ? WHERE name = ?', (not debug_status, 'debug'))
     conn.commit()
     bot.send_message(message.chat.id, '_Debug Mode {}_'.format('On' if not debug_status else 'Off'))
+
+
+@bot.message_handler(commands=['send'])
+def send_welcome(message):
+    tele_cursor.execute('DELETE FROM send_time where TRUE')
+    conn.commit()
+    bot.reply_to(message, '_Message Queue Cleared_')
+
+
+@bot.message_handler(commands=['campaign'])
+def send_welcome(message):
+    campaign_alert()
+    bot.reply_to(message, '_Processed_')
 
 
 @bot.message_handler(commands=['pause'])
@@ -880,8 +947,8 @@ def pause_campaign_alert(message):
         if replied_text.split(' ')[0] == 'Join' and replied_text.split(' ')[1] == 'Campaign':
             campaign_name = replied_text.split('☪')[1].strip()
             shop_name = replied_text.split('彡')[1].split('🪐')[0].strip()
-            cursor.execute('UPDATE campaign_alert SET status = ? WHERE name = ? AND shop_name = ?',
-                           ('False', campaign_name, shop_name))
+            tele_cursor.execute('UPDATE campaign_alert SET status = ? WHERE name = ? AND shop_name = ?',
+                                ('False', campaign_name, shop_name))
             conn.commit()
             bot.reply_to(message, '_Campaign Alert Paused_\n📌{}'.format(to_md(campaign_name)))
             return True
@@ -893,13 +960,26 @@ def pause_campaign_alert(message):
 @bot.message_handler(commands=['clear'])
 def pause_campaign_alert(message):
     argument = message.text.split(' ')[1]
+    if argument is None:
+        bot.reply_to(message, '_Give an argument_')
+        return True
     allowed_process = ('send_time', 'external_reply', 'reply_fix', 'campaign_alert')
     if argument in allowed_process:
-        cursor.execute('DELETE FROM {} where TRUE'.format(argument))
+        tele_cursor.execute('DELETE FROM {} where TRUE'.format(argument))
         conn.commit()
         bot.reply_to(message, '•{}• _Cleared_✄'.format(to_md(argument)))
     else:
         bot.reply_to(message, '_Access not found_ 🗝️')
+
+
+@bot.message_handler(commands=['process'])
+def show_process(message):
+    process_details = tele_cursor.execute('SELECT * FROM process_time order by name').fetchall()
+    message_text = ''
+    for process_detail in process_details:
+        serial, name, execution_time, shop_name = process_detail
+        message_text += '*{}*: {} ➤ {}\n'.format(to_md(name), to_md(shop_name), execution_time)
+    bot.send_message(message.chat.id, message_text)
 
 
 @bot.message_handler(func=lambda message: True)
@@ -1022,8 +1102,16 @@ while True:
         mouse = mouse_array[order - 1]
         print(f"ID: {order}\tShop Name: {database_shop_name}")
         try:
-            load_cookies(cookie)
-            check_message_status()
+            cookie_validation(database_shop_name)
+            try:
+                check_message_status()
+            except Exception as message_error:
+                print(message_error)
+                driver.save_screenshot(
+                    'Error Screenshot/' + database_shop_name + '-' + type(message_error).__name__ + '.png')
+                wait_for_connection()
+                reset_im_interface()
+                continue
             driver.switch_to.window(driver.window_handles[1])
             process_list = (('question', 60),
                             ('home_inspection', 0),
@@ -1047,7 +1135,7 @@ while True:
                 msg_id = cursor.fetchall()
                 order, database_shop_name, email, password, cookie, remark, driver, wait, mouse = (
                     instance_data(msg_shop[0], driver_array, wait_array, mouse_array))
-                load_cookies(cookie)
+                cookie_validation(database_shop_name)
                 if not check_message_status():
                     continue
                 for msg_serial in msg_id:
@@ -1066,7 +1154,7 @@ while True:
                 print('■━■━■━■ Fix Tunneling for {}'.format(fix_msg_shop[0]))
                 order, database_shop_name, email, password, cookie, remark, driver, wait, mouse = (
                     instance_data(fix_msg_shop[0], driver_array, wait_array, mouse_array))
-                load_cookies(cookie)
+                cookie_validation(database_shop_name)
                 fix_reply()
                 print('■━■━■━■ Fix Tunneling Completed')
         except Exception as error:
